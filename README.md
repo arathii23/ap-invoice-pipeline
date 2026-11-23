@@ -121,7 +121,7 @@ AP_TEST_REAL_LLM=1 SARVAM_API_KEY=… GEMINI_API_KEY=… python3 -m unittest tes
 |---|---|
 | Backend regression suites (`discover -s tests`) | run and passing locally (macOS, Python 3.13), including provider-fallback and workspace-isolation suites |
 | Browser suite (Chrome, desktop + mobile, refresh, restart, retry, filters, previews) | run and passing locally |
-| OCR | Apple Vision, RapidOCR and Tesseract (5.5, macOS) exercised locally, incl. the scanned sample through the full pipeline (`tests/test_15_ocr.py`); on Render the image uses Tesseract (Debian package) — see the Render check noted in the commit history |
+| OCR | Apple Vision, RapidOCR and Tesseract (5.5, macOS) exercised locally, incl. the scanned sample through the full pipeline (`tests/test_15_ocr.py`). On Render (Linux, Tesseract from Debian, 512 MB) all 11 bundled samples were run live on 24 Nov 2026 with the expected decisions; the scanned sample was read in ~11 s and approved. Other scanned documents are untested there |
 | LLM extraction | request shape, fallback, cooldowns and grounding proven against **mock** Sarvam/Gemini servers; real-service calls are checked only when you run `tools/check_llm.py` / the opt-in `tests/test_llm_real.py` with real keys |
 | Docker | the image builds and runs on Render (free plan); not tested on any other host |
 | Public URL | <https://ap-invoice-pipeline.onrender.com> on Render's free tier (sleeps when idle, ephemeral disk). No authentication — private workspaces separate visitors, they are not a security boundary |

@@ -7,6 +7,7 @@ import fitz
 from helpers import AppTestCase, ROOT, make_invoice, sample_bytes
 
 HAS_RAPID = importlib.util.find_spec("rapidocr_onnxruntime") is not None
+HAS_TESS = __import__("shutil").which("tesseract") is not None
 
 
 def image_only_pdf(pages):
@@ -55,7 +56,7 @@ class OcrLimits(AppTestCase):
         self.assertEqual(self.app.post(f"/api/retry/{r['id']}")[0], 200)                                                    # and the run can be retried
 
     def test_a_killed_ocr_worker_fails_the_run_politely_and_the_server_stays_up(self):
-        self.check_failed_politely(self.run_scan_with_worker((-9, "", "", 400.0)), "OCR worker was killed")
+        self.check_failed_politely(self.run_scan_with_worker((-9, "", "", 400.0)), "was killed")
 
     def test_a_worker_over_the_memory_limit_is_stopped_and_reported(self):
         self.check_failed_politely(self.run_scan_with_worker(("limit", "", "", 300.0)), "more memory than this host allows")
@@ -77,6 +78,40 @@ class OcrLimits(AppTestCase):
         os.environ.update(SARVAM_API_KEY="s-secret", GEMINI_API_KEY="g-secret", SOME_TOKEN="t-secret"); self.addCleanup(lambda: [os.environ.pop(k, None) for k in ("SARVAM_API_KEY", "GEMINI_API_KEY", "SOME_TOKEN")])
         with mock.patch.object(self.server, "_run_worker", fake): self.assertEqual(self.server._ocr_run(b"png", "rapidocr"), "line one")
         self.assertFalse([k for k in seen if "KEY" in k or "TOKEN" in k or "SECRET" in k]); self.assertIn("PATH", seen)
+
+
+class IfscMisreads(AppTestCase):
+    def test_common_ocr_misreads_of_the_leading_capital_i_are_recovered_and_still_checked_against_the_master(self):
+        P = self.server.parse_invoice
+        for raw in ("ICIC0004567", "1CIC0004567", "}CIC0004567", "|CiC0004567", "!CIC0004567", "[CIC0004567"):
+            self.assertEqual(P(f"Bank A/C No: 60110045678901   IFSC: {raw}")["ifsc"], "ICIC0004567", raw)
+        self.assertIsNone(P("IFSC: XYZ0004567")["ifsc"]); self.assertIsNone(P("IFSC: ICIC1004567")["ifsc"])         # not an IFSC shape: nothing is invented
+        r = self.app.submit(make_invoice(invoice_no="INV-IFSC-1", vendor="Brightline Logistics LLP", gstin="27AAFFB5678K1Z2", po="PO-2026-1002", bank="60110045678901", ifsc="ICIC0004567"), "ok.pdf")
+        wrong = self.app.submit(make_invoice(invoice_no="INV-IFSC-2", vendor="Brightline Logistics LLP", gstin="27AAFFB5678K1Z2", po="PO-2026-1002", bank="60110045678901", ifsc="HDFC0004567"), "bad.pdf")
+        self.assertEqual(self.stage(wrong, "bank")["status"], "fail_hold")                                       # a different bank code is still a conflict
+
+
+@unittest.skipUnless(HAS_TESS, "tesseract is not installed")
+class TesseractEngine(AppTestCase):
+    def test_scanned_sample_is_read_by_tesseract_and_approved(self):
+        with mock.patch.dict(os.environ, {"AP_OCR_ENGINE": "tesseract"}):
+            self.assertEqual(self.server.ocr_engines(), ["tesseract"])
+            r = self.app.submit_sample("02_brightline_scanned.pdf")
+        ex = r["extracted"]
+        self.assertEqual((ex["invoice_no"], ex["gstin"], ex["po_ref"], ex["total"], ex["bank"]), ("BL/2026/1187", "27AAFFB5678K1Z2", "PO-2026-1002", 100654.0, "60110045678901"))
+        self.assertEqual(r["extraction"]["engine"], "tesseract"); self.assertEqual(r["decision"], "APPROVE"); self.assertEqual(len(ex["lines"]), 1)
+
+    def test_tesseract_goes_through_the_watched_runner(self):
+        seen = {}
+        def fake(cmd, env, timeout_s, max_rss_mb): seen.update(cmd=cmd, env=env, limit=max_rss_mb); return 0, "some text", "", 5.0
+        with mock.patch.object(self.server, "_run_worker", fake), mock.patch.dict(os.environ, {"AP_OCR_MAX_RSS_MB": "123"}):
+            self.assertEqual(self.server._ocr_run(b"png", "tesseract"), "some text")
+        self.assertEqual(seen["cmd"][0], "tesseract"); self.assertEqual(seen["limit"], 123); self.assertEqual(seen["env"]["OMP_THREAD_LIMIT"], "1")
+
+    def test_a_missing_tesseract_binary_fails_the_page_politely(self):
+        with mock.patch.object(self.server, "_run_worker", side_effect=FileNotFoundError("tesseract")):
+            with self.assertRaises(RuntimeError) as cm: self.server._ocr_run(b"png", "tesseract")
+        self.assertIn("could not be started", str(cm.exception))
 
 
 @unittest.skipUnless(HAS_RAPID, "rapidocr is not installed")

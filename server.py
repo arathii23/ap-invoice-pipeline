@@ -361,16 +361,17 @@ def _ocr_run(png, engine):
         f = os.path.join(td, "page.png"); open(f, "wb").write(png)
         if engine == "apple-vision":
             return subprocess.run([OCR_BIN, f], check=True, capture_output=True, text=True).stdout.strip()
-        if engine == "tesseract":
-            return subprocess.run(["tesseract", f, "stdout", "--psm", "6"], check=True, capture_output=True, text=True).stdout.strip()
-        if engine == "rapidocr":      # in a child process: its memory is returned afterwards, and an out-of-memory kill takes down only the child
-            env = {**{k: v for k, v in os.environ.items() if not re.search(r"KEY|TOKEN|SECRET", k, re.I)}, "PYTHONDONTWRITEBYTECODE": "1"}
-            code, out, err, peak = _run_worker([sys.executable, os.path.join(BASE, "ocr_worker.py"), f], env, _int_env("AP_OCR_TIMEOUT_S", 180), _int_env("AP_OCR_MAX_RSS_MB", 0))
-            print(f"ocr worker: exit {code}, peak {peak:.0f} MB" + (f" | {err.strip().splitlines()[-1]}" if err.strip() else ""), flush=True)
-            if code == "limit": raise RuntimeError(f"OCR needs more memory than this host allows ({_int_env('AP_OCR_MAX_RSS_MB', 0)} MB); the document was not read. Upload a text-based PDF.")
-            if code == "timeout": raise RuntimeError(f"OCR did not finish within {_int_env('AP_OCR_TIMEOUT_S', 180)} s")
+        if engine in ("tesseract", "rapidocr"):     # child processes, watched: memory is returned afterwards, and a runaway one is stopped before the host's limit
+            cmd = ["tesseract", f, "stdout", "--psm", "6"] if engine == "tesseract" else [sys.executable, os.path.join(BASE, "ocr_worker.py"), f]
+            env = {**{k: v for k, v in os.environ.items() if not re.search(r"KEY|TOKEN|SECRET", k, re.I)}, "PYTHONDONTWRITEBYTECODE": "1", "OMP_THREAD_LIMIT": "1"}
+            limit, tmo = _int_env("AP_OCR_MAX_RSS_MB", 0), _int_env("AP_OCR_TIMEOUT_S", 180)
+            try: code, out, err, peak = _run_worker(cmd, env, tmo, limit)
+            except OSError as e: raise RuntimeError(f"{engine} could not be started: {e}")
+            print(f"ocr {engine}: exit {code}, peak {peak:.0f} MB" + (f" | {err.strip().splitlines()[-1][:120]}" if err.strip() else ""), flush=True)
+            if code == "limit": raise RuntimeError(f"OCR needs more memory than this host allows ({limit} MB); the document was not read. Upload a text-based PDF.")
+            if code == "timeout": raise RuntimeError(f"OCR did not finish within {tmo} s")
             if code != 0:
-                raise RuntimeError("OCR worker " + (f"was killed (signal {-code}; out of memory?)" if code < 0 else f"failed: {err.strip()[-200:]}"))
+                raise RuntimeError(f"{engine} " + (f"was killed (signal {-code}; out of memory?)" if code < 0 else f"failed: {err.strip()[-200:]}"))
             return out.strip()
     raise RuntimeError(f"unknown OCR engine {engine}")
 
@@ -423,8 +424,8 @@ def parse_invoice(text):
     tot = re.findall(r"(?:Total[ \t]*Due|Grand[ \t]*Total|Total[ \t]*Payable|Amount[ \t]*Payable|Invoice[ \t]*Total|Total[ \t]*Amount)[ \t]*:?[ \t]*" + AMT, t, re.I)
     f["total"] = num(tot[-1]) if tot else None
     m = re.search(r"(?:A/C|A/?C[ \t]*No|Account)[^\n\d]{0,20}(\d{9,18})", t, re.I); f["bank"] = m.group(1) if m else None
-    m = re.search(r"IFSC(?:[ \t]*Code)?[ \t]*[:.]?[ \t]*([A-Z1]{4}0[A-Z0-9]{6})", t, re.I)
-    f["ifsc"] = (m.group(1)[:4].upper().replace("1", "I") + m.group(1)[4:].upper()) if m else None
+    m = re.search(r"IFSC(?:[ \t]*Code)?[ \t]*[:.]?[ \t]*([A-Z1|!}\]\[]{4}0[A-Z0-9]{6})", t, re.I)       # OCR often reads the capital I of ICIC / IDIB as 1 | ! } ] [
+    f["ifsc"] = (re.sub(r"[1|!}\]\[]", "I", m.group(1)[:4].upper()) + m.group(1)[4:].upper()) if m else None   # the result is still compared with the vendor master, so a wrong guess can only hold, never approve
     items, started = [], False
     for l in lines:
         if re.match(r"^(Description|Item|Particulars)\b", l, re.I): started = True; continue

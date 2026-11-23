@@ -326,38 +326,44 @@ def ocr_engines():
     if importlib.util.find_spec("rapidocr_onnxruntime"): avail.append("rapidocr")
     return [forced] if forced in avail else avail
 
-def _group_lines(boxes):
-    """boxes: [(x, y_center, text)] -> text lines joined with 3 spaces (matches the table parser)."""
-    boxes.sort(key=lambda b: (b[1], b[0])); lines = []
-    for x, y, t in boxes:
-        if lines and abs(lines[-1][0] - y) < 9: lines[-1][1].append((x, t))
-        else: lines.append([y, [(x, t)]])
-    return "\n".join("   ".join(t for _, t in sorted(l[1])) for l in lines)
+from ocr_worker import group_lines as _group_lines      # shared with the OCR worker process
 
-def ocr_png(png, engine):
+_OCR_LOCK = threading.Semaphore(1)     # one OCR at a time: a small (512 MB) host cannot hold two engines' working memory
+def ocr_render_dpi(rect, dpi=200, max_side_px=2400):
+    """Render resolution for OCR: 200 dpi, but never more than max_side_px on the long side (a poster-sized page must not become a 200 MB bitmap)."""
+    return max(30, int(min(dpi, max_side_px * 72.0 / max(rect.width, rect.height, 1.0))))
+
+def _ocr_run(png, engine):
     with tempfile.TemporaryDirectory() as td:
         f = os.path.join(td, "page.png"); open(f, "wb").write(png)
         if engine == "apple-vision":
             return subprocess.run([OCR_BIN, f], check=True, capture_output=True, text=True).stdout.strip()
         if engine == "tesseract":
             return subprocess.run(["tesseract", f, "stdout", "--psm", "6"], check=True, capture_output=True, text=True).stdout.strip()
-        if engine == "rapidocr":
-            from rapidocr_onnxruntime import RapidOCR
-            res, _ = RapidOCR()(f)
-            return _group_lines([(b[0][0], (b[0][1] + b[2][1]) / 2, t) for b, t, _ in (res or [])])
+        if engine == "rapidocr":      # in a child process: its memory is returned afterwards, and an out-of-memory kill takes down only the child
+            r = subprocess.run([sys.executable, os.path.join(BASE, "ocr_worker.py"), f], capture_output=True, text=True, timeout=_int_env("AP_OCR_TIMEOUT_S", 180),
+                               env={**{k: v for k, v in os.environ.items() if not re.search(r"KEY|TOKEN|SECRET", k, re.I)}, "PYTHONDONTWRITEBYTECODE": "1"})
+            if r.returncode != 0:
+                raise RuntimeError("OCR worker " + (f"was killed (signal {-r.returncode}; out of memory?)" if r.returncode < 0 else f"failed: {(r.stderr or '').strip()[-200:]}"))
+            return r.stdout.strip()
     raise RuntimeError(f"unknown OCR engine {engine}")
+
+def ocr_png(png, engine):
+    with _OCR_LOCK: return _ocr_run(png, engine)
 
 def extract_text(path):
     """Per-page: use the text layer when present, otherwise OCR just that page.
     Returns (text, info) with info = {pages, ocr_pages, engine}."""
     pages = pdf_pages_text(path); out, ocr_pages, engine = [], [], None
+    need, cap = sum(1 for t in pages if len(t) < 40), _int_env("AP_OCR_MAX_PAGES", 8)
+    if need > cap: raise RuntimeError(f"{need} pages of this document need OCR; this server reads at most {cap} scanned pages per document. Upload a text-based PDF or split it.")
     doc = None
     for i, t in enumerate(pages):
         if len(t) >= 40: out.append(t); continue
         engs = ocr_engines()
         if not engs: raise RuntimeError("page %d has no text layer and no OCR engine is installed (need Apple Vision, tesseract or rapidocr)" % (i + 1))
         doc = doc or fitz.open(path)
-        png = doc[i].get_pixmap(dpi=200).tobytes("png")
+        png = doc[i].get_pixmap(dpi=ocr_render_dpi(doc[i].rect)).tobytes("png")
         last = None
         for e in engs:
             try: out.append(ocr_png(png, e)); engine = e; ocr_pages.append(i + 1); break

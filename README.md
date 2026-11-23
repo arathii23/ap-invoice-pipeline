@@ -20,6 +20,7 @@ Data lives in `data/` (`runs.db`, `uploads/`) next to the reference files `pos.j
 | `AP_ALLOW_RESET` | unset (**disabled**) | `1` enables `POST /api/reset` and the *Clear history* button on a single shared dataset (a SQLite backup is written first). Leave it off for anything shared. In workspace mode reset is always on, but only ever clears the caller's own workspace. |
 | `STAGE_DELAY` | `0.55` | seconds between stages on the live run view (cosmetic; the decision is already committed) |
 | `AP_OCR_ENGINE` | auto | force an OCR engine |
+| `AP_OCR_MAX_SIDE`, `AP_OCR_MAX_PAGES`, `AP_OCR_TIMEOUT_S` | `960`, `8`, `180` | OCR bounds: pixels on the long side used for text detection, scanned pages read per document, seconds per page |
 | `AP_LLM` | `auto` | `auto` = ask the LLM only when the rules left gaps, `always`, `off` |
 | `SARVAM_API_KEY` | — | Sarvam key (tried **first**) |
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | — | Gemini key (tried when Sarvam does not answer) |
@@ -98,6 +99,7 @@ The model never decides. Extraction (rules, OCR, optional LLM) produces fields; 
 
 ## Extraction
 - Text layer first; pages with no text are OCR'd page by page. OCR engine chain: Apple Vision (macOS) → Tesseract → RapidOCR (pip, any OS).
+- **OCR is memory-bounded for small hosts.** RapidOCR runs in its own short-lived worker process (`ocr_worker.py`), one page at a time, with text detection on a 960 px version of the page (about 280 MB peak instead of ~900 MB with the library defaults), pages are rendered at no more than 2400 px on the long side, and a document may have at most 8 scanned pages. If a worker is ever killed, that run is held with a clear error and can be retried; the web server and other visitors are unaffected. (The first Render deploy ran the library defaults inside the web server and the 512 MB free instance was killed by the scanned sample.)
 - The rule parser tolerates label synonyms (Bill No., Dated, Taxable Value, Grand Total, Account Number), several date formats, Rs./INR prefixes, CGST+SGST, repeated table headers across pages, and OCR output with dropped spaces.
 - Optional LLM fills only fields the rules missed, and only values it can **ground in the document**: right type (no booleans / numeric strings), whole tokens (so `123` is not accepted inside `999123999`), next to the field's own label, and line items only if the whole row (description, quantity, unit price, amount) appears on one line of the document. Anything else is discarded and the reason is recorded. Malformed answers and outages are handled; rules still decide.
 
@@ -118,7 +120,7 @@ AP_TEST_REAL_LLM=1 SARVAM_API_KEY=… GEMINI_API_KEY=… python3 -m unittest tes
 |---|---|
 | Backend regression suites (`discover -s tests`) | run and passing locally (macOS, Python 3.13), including provider-fallback and workspace-isolation suites |
 | Browser suite (Chrome, desktop + mobile, refresh, restart, retry, filters, previews) | run and passing locally |
-| OCR | Apple Vision and RapidOCR exercised on macOS; the Linux/Docker path is what Render runs, but the scanned sample (02) has **not** been confirmed there (free tier has 512 MB RAM) |
+| OCR | Apple Vision and RapidOCR exercised on macOS (worker peak ~280 MB, asserted in `tests/test_15_ocr.py`); the Linux/Docker path is what Render runs — see the live check recorded in the commit history / this table's last update |
 | LLM extraction | request shape, fallback, cooldowns and grounding proven against **mock** Sarvam/Gemini servers; real-service calls are checked only when you run `tools/check_llm.py` / the opt-in `tests/test_llm_real.py` with real keys |
 | Docker | the image builds and runs on Render (free plan); not tested on any other host |
 | Public URL | <https://ap-invoice-pipeline.onrender.com> on Render's free tier (sleeps when idle, ephemeral disk). No authentication — private workspaces separate visitors, they are not a security boundary |

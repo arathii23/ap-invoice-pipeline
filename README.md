@@ -2,8 +2,9 @@
 
 PDF invoice → extract (text layer / OCR / optional LLM) → match PO → validate → **APPROVE / HOLD / REJECT** with reasons a finance manager can read.
 
-> **Delivery status, plainly.** This is a *local* demo. `http://localhost:8765` only works on the machine running it. There is **no public link yet**,
-> **no demo video yet**, the Dockerfile has **never been built**, and the optional LLM path has **only been tested against a mock**. Details in [Verification status](#verification-status).
+> **Delivery status, plainly.** A public copy runs on Render's **free** tier: <https://ap-invoice-pipeline.onrender.com> (deployed from this repo's `main` branch).
+> It sleeps after ~15 minutes idle, so the first request can take ~50 s. The optional LLM path has been proven against **mock** providers; real Sarvam / Gemini
+> calls work only once keys are set on the host and are checked with `tools/check_llm.py`. There is **no demo video in this repo**. Details in [Verification status](#verification-status).
 
 ## Run
 ```
@@ -14,12 +15,45 @@ Data lives in `data/` (`runs.db`, `uploads/`) next to the reference files `pos.j
 
 | Environment variable | Default | Meaning |
 |---|---|---|
-| `PORT`, `HOST` | `8765`, `127.0.0.1` | where the server listens |
+| `PORT`, `HOST` | `8765`, `127.0.0.1` | where the server listens (the Docker image uses `0.0.0.0`) |
 | `AP_DB`, `AP_UPLOADS` | `data/runs.db`, `data/uploads/` | database and stored-document folder (tests and demos use temp locations) |
-| `AP_ALLOW_RESET` | unset (**disabled**) | `1` enables `POST /api/reset` and the *Clear history* button (a SQLite backup is written to `<db folder>/reset-backups/` first). Leave it off for anything shared. |
+| `AP_ALLOW_RESET` | unset (**disabled**) | `1` enables `POST /api/reset` and the *Clear history* button on a single shared dataset (a SQLite backup is written first). Leave it off for anything shared. In workspace mode reset is always on, but only ever clears the caller's own workspace. |
 | `STAGE_DELAY` | `0.55` | seconds between stages on the live run view (cosmetic; the decision is already committed) |
 | `AP_OCR_ENGINE` | auto | force an OCR engine |
-| `ANTHROPIC_API_KEY`, `AP_LLM` (`auto`/`always`/`off`), `AP_LLM_MODEL` | no key → LLM off | optional LLM field-filling |
+| `AP_LLM` | `auto` | `auto` = ask the LLM only when the rules left gaps, `always`, `off` |
+| `SARVAM_API_KEY` | — | Sarvam key (tried **first**) |
+| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | — | Gemini key (tried when Sarvam does not answer) |
+| `ANTHROPIC_API_KEY` | — | optional third provider |
+| `AP_LLM_PROVIDERS` | `sarvam,gemini,anthropic` | order / subset of providers to use |
+| `AP_SARVAM_MODEL`, `AP_GEMINI_MODEL`, `AP_LLM_MODEL` | `sarvam-105b`, `gemini-3.5-flash-lite`, `claude-haiku-5-5` | model names (Anthropic uses `AP_LLM_MODEL`) |
+| `AP_LLM_MAX_PER_HOUR`, `AP_LLM_MAX_PER_WS_HOUR` | `120`, `20` | provider-call budgets for the whole demo / per visitor workspace |
+| `AP_WORKSPACES` | unset (Docker image: `1`) | `1` = **public-demo mode**: a private, cookie-keyed workspace per visitor (see below) |
+| `AP_WORKSPACE_TTL_HOURS`, `AP_MAX_WORKSPACES`, `AP_WORKSPACES_DIR` | `24`, `500`, `data/workspaces` | expiry, capacity, location of the workspaces |
+| `AP_MAX_RUNS_PER_WS`, `AP_MAX_WS_MB`, `AP_MAX_ACTIVE_RUNS`, `AP_RATE_RUNS_PER_MIN` | `100`, `60`, `8`, `30` | per-workspace runs / megabytes, concurrent runs (server-wide), submissions per minute per client address |
+| `AP_RATE_NEW_WS_PER_10MIN` | `30` | new workspaces one address may create per 10 minutes (so discarding the cookie cannot fill the quota) |
+| `AP_TRUST_PROXY` | unset | `1` behind a reverse proxy (Render): the client address comes from `X-Forwarded-For`. Unset, that header is ignored so it cannot be used to dodge the rate limit. |
+| `AP_LOG_REQUESTS` | `1` | one log line per write or error request (never per poll); `0` silences it |
+
+## LLM providers (optional) — Sarvam first, Gemini as fallback
+The rules always run first. If they leave gaps (and `AP_LLM` allows it) the chain **Sarvam → Gemini → Anthropic** is tried in order, using only providers that have a key.
+A provider that answers wins; one that errors, times out, is rate-limited, returns nothing usable or is out of credits hands over to the next. A bad key / no credits (402/403) pauses that provider for
+15 minutes and a rate limit (429) for its `Retry-After`, so later runs do not wait on it. If every provider fails the run **still completes on rules alone** and the extract stage says so. The stage also names
+the provider that filled the gaps (`LLM (gemini after sarvam failed) filled gaps: …`). Keys are read from the environment only, never logged, never returned by any endpoint, and scrubbed from error text.
+
+**The LLM never decides.** It can only suggest values for fields the rules missed, and each suggestion is kept only if it is grounded in the document (right type, whole token, next to the field's own label; line items only if the whole row appears on one line). Approve / hold / reject stays deterministic.
+
+Check your keys against the real services (a few tokens): `SARVAM_API_KEY=… GEMINI_API_KEY=… python3 tools/check_llm.py`.
+
+## Public demo mode (`AP_WORKSPACES=1`)
+Built for sharing the link with strangers on a free instance:
+- **Private workspace per visitor.** The first API call sets a random `ap_ws` cookie (HttpOnly, SameSite=Lax, Secure over HTTPS) and creates `data/workspaces/<id>/` with its own database and stored documents. History, duplicate detection and PO balances are per workspace, so one reviewer can never see, approve against or retry another's runs; an unknown/forged/expired cookie just gets a new empty workspace. *Clear history* clears only your own workspace. The UI says "Private workspace · cleared after N h idle".
+- **Limits.** Per-client submissions/minute, concurrent runs, runs and megabytes per workspace, number of workspaces, and hourly LLM budgets (all configurable above). Rejections are polite (429/503/413) and never touch other visitors.
+- **Expiry.** A janitor deletes workspaces idle longer than the TTL (24 h). The container disk on a free instance is ephemeral anyway: a restart or redeploy wipes **all** workspaces, and a sleeping instance wakes empty.
+- `GET /healthz` is a liveness probe that creates nothing.
+- Not authentication: a workspace is a convenience boundary for a demo, not a security boundary for real finance data.
+
+### Deploying on Render
+`render.yaml` is a Blueprint (docker runtime, free plan, auto-deploy from `main`). After the first deploy add the secrets in **Dashboard → service → Environment**: `SARVAM_API_KEY` and `GEMINI_API_KEY` (never commit them), then the service restarts. Every push to `main` redeploys (about 1–2 minutes of downtime, and all workspaces are wiped) — avoid pushing while someone is reviewing.
 
 ## Recording a demo (fresh data, live history untouched)
 `Clear history` is off by default, so record on a fresh, separate data set instead of wiping anything:
@@ -74,21 +108,22 @@ pip3 install -r requirements-dev.txt                       # playwright, for the
 python3 -W ignore -m unittest discover -s tests            # backend + real-pipeline regression suites (generated PDFs, real HTTP routes)
 python3 -W ignore -m unittest tests.browser_suite          # real Chrome via Playwright (uses system Chrome, else `playwright install chromium`)
 AP_SHOTS_DIR=shots python3 -m unittest tests.browser_suite # same, and save desktop + mobile screenshots
-AP_TEST_REAL_LLM=1 ANTHROPIC_API_KEY=… python3 -m unittest tests.test_llm_real   # OPT-IN, spends real API calls
+AP_TEST_REAL_LLM=1 SARVAM_API_KEY=… GEMINI_API_KEY=… python3 -m unittest tests.test_llm_real   # OPT-IN, spends real API calls
 ```
+`tests/test_13_providers.py` (mock Sarvam/Gemini: request shape, fallback order, cooldowns, key hygiene, budgets, grounding) and `tests/test_14_workspaces.py` (cookie isolation, caps, rate limits, expiry, reset) cover the public-demo features.
 `python3 tools/make_samples.py` regenerates samples 10–11 and their POs.
 
 ## Verification status
 | Item | Status |
 |---|---|
-| Backend regression suites (`discover -s tests`) | run and passing locally (macOS, Python 3.13) |
+| Backend regression suites (`discover -s tests`) | run and passing locally (macOS, Python 3.13), including provider-fallback and workspace-isolation suites |
 | Browser suite (Chrome, desktop + mobile, refresh, restart, retry, filters, previews) | run and passing locally |
-| OCR | Apple Vision and RapidOCR exercised on macOS only; Tesseract path never run; **no Linux run** |
-| LLM extraction | grounding/validation proven against a **mock** provider only; the real-API test exists but is opt-in and **has not been run** |
-| Docker | `Dockerfile` written, **not built or run** (Docker is not installed in the build environment) — it is not a deployment |
-| Public URL | **none** — `localhost` is a local demo address only. Before sharing publicly, keep `AP_ALLOW_RESET` unset and put the app behind authentication: it has none |
-| 5-minute demo video | **not recorded** |
+| OCR | Apple Vision and RapidOCR exercised on macOS; the Linux/Docker path is what Render runs, but the scanned sample (02) has **not** been confirmed there (free tier has 512 MB RAM) |
+| LLM extraction | request shape, fallback, cooldowns and grounding proven against **mock** Sarvam/Gemini servers; real-service calls are checked only when you run `tools/check_llm.py` / the opt-in `tests/test_llm_real.py` with real keys |
+| Docker | the image builds and runs on Render (free plan); not tested on any other host |
+| Public URL | <https://ap-invoice-pipeline.onrender.com> on Render's free tier (sleeps when idle, ephemeral disk). No authentication — private workspaces separate visitors, they are not a security boundary |
+| 5-minute demo video | not part of this repository |
 
 ## Limitations
 - Reference data is JSON (stand-in for an ERP); no e-mail ingestion or ERP write-back; no user accounts or authentication.
-- Single-node SQLite; fine for a demo, not a multi-node deployment.
+- Single-node SQLite; fine for a demo, not a multi-node deployment. Free-tier hosting: cold starts, ephemeral storage, one small instance.

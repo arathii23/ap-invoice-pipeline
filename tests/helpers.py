@@ -80,12 +80,22 @@ class AppBase:
     base = ""
 
     def request(self, method, path, body=None, headers=None, timeout=60):
-        req = urllib.request.Request(self.base + path, data=body, method=method, headers=headers or {})
+        hdrs = dict(headers or {}); jar = self.__dict__.setdefault("cookies", {})       # a browser-like cookie jar (private workspaces are cookie-keyed)
+        if jar: hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in jar.items())
+        req = urllib.request.Request(self.base + path, data=body, method=method, headers=hdrs)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.status, dict(r.headers), r.read()
+                self._eat(r.headers); return r.status, dict(r.headers), r.read()
         except urllib.error.HTTPError as e:
-            return e.code, dict(e.headers), e.read()
+            self._eat(e.headers); return e.code, dict(e.headers), e.read()
+
+    def _eat(self, headers):
+        for c in headers.get_all("Set-Cookie") or []:
+            k, _, rest = c.partition("="); self.cookies[k.strip()] = rest.split(";")[0]
+
+    def visitor(self):
+        """Another 'browser' talking to the same server: its own cookie jar, so its own private workspace."""
+        v = Visitor(); v.base = self.base; return v
 
     def get(self, path):
         s, h, b = self.request("GET", path)
@@ -133,6 +143,10 @@ from unittest import mock
 PO_ID = "PO-2026-9001"
 
 
+class Visitor(AppBase):
+    pass
+
+
 def make_po(net=100000, tax=18, billed=0, vendor="V001", lines=None, status="open"):
     """A synthetic PO (patched into server.POS for the duration of a test; never written to the reference data)."""
     return {"vendor": vendor, "desc": "Synthetic test PO", "net": net, "tax": tax, "billed": billed, "status": status, "lines": lines or []}
@@ -166,7 +180,10 @@ class AppTestCase(unittest.TestCase):
 
 class InProcessApp(AppBase):
     """The real HTTP handler of server.py, served from this process on an ephemeral port with a temp DB/upload dir."""
-    ENV_KEYS = ("AP_DB", "AP_UPLOADS", "STAGE_DELAY", "AP_ALLOW_RESET", "AP_LLM", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
+    ENV_KEYS = ("AP_DB", "AP_UPLOADS", "STAGE_DELAY", "AP_ALLOW_RESET", "AP_LLM", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                "SARVAM_API_KEY", "SARVAM_BASE_URL", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_BASE_URL", "AP_LLM_PROVIDERS", "AP_SARVAM_MODEL", "AP_GEMINI_MODEL",
+                "AP_LLM_MAX_PER_HOUR", "AP_LLM_MAX_PER_WS_HOUR", "AP_WORKSPACES", "AP_WORKSPACES_DIR", "AP_TRUST_PROXY", "AP_RATE_RUNS_PER_MIN",
+                "AP_MAX_ACTIVE_RUNS", "AP_MAX_RUNS_PER_WS", "AP_MAX_WS_MB", "AP_MAX_WORKSPACES", "AP_WORKSPACE_TTL_HOURS", "AP_COOKIE_SECURE", "AP_LOG_REQUESTS", "AP_RATE_NEW_WS_PER_10MIN")
 
     def __init__(self, stage_delay="0", env=None, allow_reset=False):
         sys.path.insert(0, ROOT)
@@ -175,10 +192,10 @@ class InProcessApp(AppBase):
         self.tmp = tempfile.mkdtemp(prefix="ap-inproc-")
         self.db = os.path.join(self.tmp, "runs.db"); self.uploads = os.path.join(self.tmp, "uploads")
         self._saved = {k: os.environ.get(k) for k in self.ENV_KEYS}
-        for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"): os.environ.pop(k, None)
-        os.environ.update(AP_DB=self.db, AP_UPLOADS=self.uploads, STAGE_DELAY=stage_delay, AP_ALLOW_RESET="1" if allow_reset else "0", AP_LLM="off")
+        for k in self.ENV_KEYS: os.environ.pop(k, None)             # never inherit a developer's real keys or deployment settings
+        os.environ.update(AP_DB=self.db, AP_UPLOADS=self.uploads, STAGE_DELAY=stage_delay, AP_ALLOW_RESET="1" if allow_reset else "0", AP_LLM="off", AP_LOG_REQUESTS="0")
         os.environ.update(env or {})
-        server.RUNS.clear(); server.HOOKS.clear()
+        server.RUNS.clear(); server.HOOKS.clear(); server.reset_llm_state(); server.RATE.hits.clear()
         server.init_store()
         self.httpd = server.make_server("127.0.0.1", 0)
         self.port = self.httpd.server_address[1]; self.base = f"http://127.0.0.1:{self.port}"
@@ -210,7 +227,7 @@ class SubprocessApp(AppBase):
         self.proc = None
 
     def start(self, timeout=30):
-        env = {k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC_")}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "SARVAM_", "GEMINI_", "GOOGLE_API_KEY", "AP_"))}
         env.update(PORT=str(self.port), HOST="127.0.0.1", AP_DB=self.db, AP_UPLOADS=self.uploads, STAGE_DELAY=self.stage_delay,
                    AP_ALLOW_RESET="1" if self.allow_reset else "0", AP_LLM="off", PYTHONDONTWRITEBYTECODE="1")
         env.update(self.extra_env)

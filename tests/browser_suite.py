@@ -265,5 +265,44 @@ class BrowserResetFlow(unittest.TestCase):
             finally: br.close()
 
 
+class BrowserWorkspaceFlow(unittest.TestCase):
+    """Public-demo mode in two real, separate browser profiles: each visitor has a private workspace; Clear history only clears your own."""
+
+    @unittest.skipIf(sync_playwright is None, "playwright not installed")
+    def test_two_visitors_are_isolated_and_reset_is_their_own(self):
+        wsdir = tempfile.mkdtemp(prefix="ap-wsb-")
+        app = SubprocessApp(stage_delay="0.1", allow_reset=False, env={"AP_WORKSPACES": "1", "AP_WORKSPACES_DIR": wsdir, "AP_LOG_REQUESTS": "0"}).start()
+        self.addCleanup(app.cleanup); self.addCleanup(__import__("shutil").rmtree, wsdir, True)
+        with sync_playwright() as pw:
+            try: br = pw.chromium.launch(channel="chrome", headless=True)
+            except PWError: br = pw.chromium.launch(headless=True)
+            try:
+                problems = []
+                def visitor():
+                    c = br.new_context(**DESKTOP); p = c.new_page(); p.set_default_timeout(20000)
+                    p.on("pageerror", lambda e: problems.append(("pageerror", str(e))))
+                    p.on("response", lambda r: problems.append(("http", f"{r.status} {r.url}")) if r.status >= 400 else None); return p
+                def process(p):
+                    p.goto(app.base + "/#/upload"); p.reload(); p.click('.samples button[data-f="01_acme_clean.pdf"]'); p.click("#go")
+                    p.wait_for_url(re.compile(r"#/run/[0-9a-f]+")); p.wait_for_selector("#decision", timeout=30000); return p.url.split("/")[-1]
+                def history(p): p.goto(app.base + "/#/history"); p.reload(); p.wait_for_load_state("networkidle")
+                a, b = visitor(), visitor()
+                a.goto(app.base + "/#/upload"); a.reload(); a.wait_for_function("document.querySelector('#engtxt') && document.querySelector('#engtxt').textContent.includes('Private workspace')")
+                self.assertIn("cleared after 24 h idle", a.inner_text("#engtxt"))
+                ra = process(a); history(a); a.wait_for_selector("table.t tr.r")
+                history(b); b.wait_for_selector(".empty:has-text('No invoices processed yet')")
+                b.goto(app.base + f"/#/run/{ra}"); b.reload(); b.wait_for_selector("text=not found")                    # a's run id means nothing to b
+                rb = process(b); self.assertNotEqual(ra, rb)                                                          # not a duplicate for b: it is b's own first invoice
+                self.assertIn("Approved", b.inner_text("#decision"))
+                history(a); self.assertEqual(a.locator("table.t tr.r").count(), 1)
+                self.assertFalse(a.is_hidden("#clear"), "Clear history is offered in workspace mode")
+                a.once("dialog", lambda d: d.accept()); a.click("#clear"); a.wait_for_selector(".empty:has-text('No invoices processed yet')")
+                history(b); self.assertEqual(b.locator("table.t tr.r").count(), 1, "a's reset must not touch b's workspace")
+                ids = [next(c["value"] for c in pg.context.cookies() if c["name"] == "ap_ws") for pg in (a, b)]
+                self.assertEqual(len(set(ids)), 2); self.assertTrue(all(os.path.isdir(os.path.join(wsdir, i)) for i in ids))   # (a quick reload may orphan an extra, empty one: harmless, expires)
+                self.assertEqual([x for x in problems if "not found" not in str(x) and "404" not in str(x)], [], "unexpected page errors / HTTP failures")
+            finally: br.close()
+
+
 if __name__ == "__main__":
     unittest.main()

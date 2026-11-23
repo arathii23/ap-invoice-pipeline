@@ -1,3 +1,4 @@
 pypdf
 PyMuPDF
 rapidocr-onnxruntime   # cross-platform OCR; on macOS the bundled Apple Vision tool is used first
+certifi              # CA bundle for the LLM providers' HTTPS calls

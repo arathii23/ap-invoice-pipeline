@@ -3,11 +3,11 @@
 Run:  python3 server.py   then open http://localhost:8765
 Needs pypdf + PyMuPDF (+ an OCR engine for scanned pages). See README.md.
 """
-import contextlib, contextvars, difflib, hashlib, json, os, re, shutil, socket, sqlite3, ssl, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import contextlib, contextvars, difflib, hashlib, io, json, os, re, shutil, socket, sqlite3, ssl, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 import pypdf
 
@@ -785,6 +785,8 @@ SUPPORTED_DATES = "DD Mon YYYY, DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD, 
 
 def parse_date(s):
     s = re.sub(r"\s+", " ", s or "").strip()
+    if re.fullmatch(r"\d{1,2} ?[A-Za-z]{3,9} ?\d{4}", s):       # OCR often drops the spaces of a written-out date: 05Nov 2026, 05 Nov2026, 05Nov2026
+        s = re.sub(r"(?<=\d)(?=[A-Za-z])|(?<=[A-Za-z])(?=\d)", " ", s).replace("  ", " ")
     for f in DATE_FORMATS:
         try: return datetime.strptime(s, f)
         except ValueError: pass
@@ -1247,9 +1249,10 @@ def _execute(run):
     committed = False
     try:
         data, _ = read_attachment(run["attachment_id"])
-        run["file_hash"] = sha_hex(data)[:16]
+        run["file_hash"] = (run.get("source") or {}).get("original_sha") or sha_hex(data)[:16]     # the bytes the vendor sent, so a re-sent photo or e-mail is still recognised
         run["current"] = "ingest"; run["_last"] = time.time()
-        step(run, "ingest", "pass", "Ingest", f"Received {run['filename']} ({len(data) / 1024:.1f} KB), sha256 {run['file_hash']}.")
+        note = source_note(run.get("source"))
+        step(run, "ingest", "pass", "Ingest", f"Received {run['filename']} ({len(data) / 1024:.1f} KB), sha256 {run['file_hash']}." + (" " + note if note else ""))
         run["current"] = "extract"
         with tempfile.TemporaryDirectory() as td:           # extractors want a path: give them a private copy of the verified bytes
             p = os.path.join(td, "doc.pdf")
@@ -1329,15 +1332,185 @@ def new_run_id():
         with conn() as c:
             if not c.execute("SELECT 1 FROM runs WHERE id=?", (rid,)).fetchone(): return rid
 
-def start_run(filename, attachment_id, retry_of=None, up_hash=None):
-    purge_runs()
+def new_run(filename, attachment_id, retry_of=None, up_hash=None, source=None, batch=None, status="running"):
     rid = new_run_id()
-    run = {"id": rid, "ver": SCHEMA_VERSION, "ts": datetime.now().astimezone().isoformat(timespec="seconds"), "filename": safe_name(filename), "status": "running",
+    run = {"id": rid, "ver": SCHEMA_VERSION, "ts": datetime.now().astimezone().isoformat(timespec="seconds"), "filename": safe_name(filename), "status": status,
            "stages": [], "current": "ingest", "attachment_id": attachment_id, "retry_of": retry_of, "decision": None, "headline": "",
            "file_hash": "", "extracted": {}, "_up": up_hash, "_ws": _WS.get()}
+    if source: run["source"] = source
+    if batch: run["batch"] = batch
     RUNS[rid] = run
+    return run
+
+def start_run(filename, attachment_id, retry_of=None, up_hash=None, source=None):
+    purge_runs()
+    run = new_run(filename, attachment_id, retry_of, up_hash, source)
     threading.Thread(target=execute, args=(run,), daemon=True).start()
-    return rid
+    return run["id"]
+
+def start_batch(items):
+    """Several documents from one upload (an e-mail, a ZIP, the sample set): queued and processed one after another, so a batch
+    never competes with itself for the small host's memory, and every run still gets its own live view."""
+    purge_runs(); bid = uuid.uuid4().hex[:8]
+    runs = [new_run(name, aid, source=src, batch=bid, status="queued") for name, aid, src in items]
+    ctx = contextvars.copy_context()
+    def work():
+        for r in runs:
+            r["status"] = "running"; execute(r)
+    threading.Thread(target=lambda: ctx.run(work), daemon=True).start()
+    return bid, [r["id"] for r in runs]
+
+# ---------- input formats: PDF, photos and scans as images, forwarded e-mails (.eml), ZIP batches ----------
+# AP teams receive invoices as e-mail attachments, phone photos and zipped month-end batches, not only as clean PDFs.
+# Everything is normalised to a PDF before the pipeline sees it; the ORIGINAL bytes' hash is used for duplicate detection.
+class Unsupported(Exception): pass
+
+FORMAT_NAMES = {"pdf": "PDF", "jpg": "JPEG photo", "png": "PNG image", "tiff": "TIFF scan", "webp": "WebP image", "bmp": "BMP image", "gif": "GIF image"}
+MAX_BATCH_FILES = 25
+MAX_BATCH_BYTES = 60 * 1024 * 1024
+MAX_IMAGE_PIXELS = 60_000_000          # decompression-bomb guard (a 60 MP photo is already far more than OCR needs)
+
+def sniff(data, name=""):
+    n = (name or "").lower(); h = data[:16]
+    if data[:1024].lstrip().startswith(b"%PDF"): return "pdf"
+    if h.startswith(b"\x89PNG\r\n\x1a\n"): return "png"
+    if h.startswith(b"\xff\xd8\xff"): return "jpg"
+    if h[:4] in (b"II*\x00", b"MM\x00*"): return "tiff"
+    if h[:4] == b"RIFF" and h[8:12] == b"WEBP": return "webp"
+    if h[:2] == b"BM": return "bmp"
+    if h[:6] in (b"GIF87a", b"GIF89a"): return "gif"
+    if h[4:8] == b"ftyp" and h[8:12] in (b"heic", b"heix", b"mif1", b"msf1", b"hevc", b"heim", b"heis"): return "heic"
+    if h.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"): return "msg" if n.endswith(".msg") else "office"
+    if h.startswith(b"PK\x03\x04") or h.startswith(b"PK\x05\x06"):
+        if n.endswith((".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".pages", ".numbers")) or b"[Content_Types].xml" in data[:4000]: return "office"
+        return "zip"
+    head = data[:4000].lstrip()
+    if n.endswith(".eml") or re.match(rb"(?i)(received|return-path|delivered-to|from|to|subject|date|mime-version|message-id|x-[\w-]+|dkim-signature|arc-[\w-]+):", head):
+        if re.search(rb"(?im)^(from|subject|mime-version|content-type):", head): return "eml"
+    if n.endswith((".heic", ".heif")): return "heic"
+    if b"%PDF-" in data[:1024]: return "pdf"          # a PDF with a few junk bytes before its header (some scanners and mail gateways do this)
+    return None
+
+def _unsupported_reason(kind, name):
+    if kind == "heic": return f"“{name}” is an iPhone HEIC photo, which this server cannot read yet. Share it as JPEG (iPhone: Settings → Camera → Formats → Most Compatible) or as a PDF."
+    if kind == "office": return f"“{name}” is an Office document. Export the invoice as PDF (File → Save as PDF) and upload that."
+    if kind == "msg": return f"“{name}” is an Outlook .msg file. Forward the e-mail as an attachment (.eml) or save the invoice attachment and upload it."
+    return (f"“{name}” is not a supported file. Upload a PDF, a photo or scan (JPG, PNG, TIFF, WebP), a forwarded e-mail (.eml) or a ZIP of these.")
+
+def image_to_pdf(data, kind):
+    """Photo/scan -> PDF. Phone photos are rotated upright from their EXIF orientation; multi-page TIFF scans keep every page."""
+    try:
+        from PIL import Image, ImageOps, ImageSequence
+        Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+        im = Image.open(io.BytesIO(data))
+        out = fitz.open()
+        for i, frame in enumerate(ImageSequence.Iterator(im)):
+            if i >= 20: break
+            fr = ImageOps.exif_transpose(frame.copy()) if i == 0 else frame.copy()
+            if fr.mode not in ("RGB", "L"): fr = fr.convert("RGB")
+            buf = io.BytesIO(); fr.save(buf, "PNG")
+            page = fitz.open(stream=buf.getvalue(), filetype="png")
+            out.insert_pdf(fitz.open("pdf", page.convert_to_pdf()))
+        return out.tobytes(), out.page_count
+    except ImportError:
+        doc = fitz.open(stream=data, filetype={"jpg": "jpeg"}.get(kind, kind))
+        pdf = fitz.open("pdf", doc.convert_to_pdf()); return pdf.tobytes(), pdf.page_count
+    except Exception as e:
+        if "decompression bomb" in str(e).lower() or "exceeds limit" in str(e).lower():
+            raise Unsupported("That image is too large to process (over 60 megapixels). Resize it or scan at 300 dpi.")
+        raise Unsupported(f"The image could not be read ({type(e).__name__}). It may be corrupt or truncated.")
+
+def _to_item(data, name, origin):
+    """-> (pdf_bytes, display_name, source dict) for one document, or raises Unsupported."""
+    kind = sniff(data, name)
+    if kind == "pdf":
+        return data, name, {"format": "pdf", "format_name": "PDF", "origin": origin, "original_sha": sha_hex(data)[:16]}
+    if kind in FORMAT_NAMES:
+        pdf, pages = image_to_pdf(data, kind)
+        base = os.path.splitext(name)[0] or "image"
+        return pdf, base + ".pdf", {"format": kind, "format_name": FORMAT_NAMES[kind], "origin": origin, "original_name": name, "pages": pages, "converted": True, "original_sha": sha_hex(data)[:16]}
+    raise Unsupported(_unsupported_reason(kind, name))
+
+def _email_items(data, name):
+    import email, email.policy, email.utils
+    msg = email.message_from_bytes(data, policy=email.policy.default)
+    meta = {"from": str(msg.get("From", "") or "")[:200], "subject": str(msg.get("Subject", "") or "")[:200], "date": str(msg.get("Date", "") or "")[:80], "file": name}
+    found, skipped = [], []
+    for part in msg.walk():
+        if part.is_multipart(): continue
+        fn = part.get_filename(); ctype = part.get_content_type(); disp = (part.get_content_disposition() or "")
+        if not fn and not ctype.startswith(("application/pdf", "image/", "application/zip", "application/octet-stream")): continue
+        if not fn and ctype.startswith("text/"): continue
+        try: payload = part.get_payload(decode=True) or b""
+        except Exception: payload = b""
+        fn = safe_name(fn or ("attachment." + ctype.split("/")[-1]))
+        if not payload: continue
+        if ctype.startswith("image/") and (disp == "inline" or part.get("Content-ID")) and len(payload) < 60_000:
+            skipped.append({"name": fn, "reason": "inline image in the e-mail body (logo or signature), not an invoice"}); continue
+        found.append((payload, fn))
+    if not found and not skipped:
+        raise Unsupported("This e-mail has no attachment. Forward the e-mail that carries the invoice PDF or photo as an attachment.")
+    return found, skipped, meta
+
+def _zip_items(data, name):
+    import zipfile
+    try: z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile: raise Unsupported(f"“{name}” is not a readable ZIP archive.")
+    found, skipped, total = [], [], 0
+    for info in z.infolist():
+        base = os.path.basename(info.filename)
+        if info.is_dir() or not base or base.startswith(".") or "__MACOSX" in info.filename: continue
+        if info.flag_bits & 0x1: skipped.append({"name": base, "reason": "password-protected"}); continue
+        if info.file_size > MAX_UPLOAD: skipped.append({"name": base, "reason": "larger than 10 MB"}); continue
+        total += info.file_size
+        if total > MAX_BATCH_BYTES: skipped.append({"name": base, "reason": "the archive unpacks to more than 60 MB; split it"}); continue
+        if len(found) >= MAX_BATCH_FILES: skipped.append({"name": base, "reason": f"only the first {MAX_BATCH_FILES} documents of an archive are processed"}); continue
+        found.append((z.read(info), safe_name(base)))
+    if not found and not skipped: raise Unsupported(f"“{name}” is empty.")
+    return found, skipped
+
+def expand_upload(data, name):
+    """One upload -> (documents [(pdf, display_name, source)], skipped [{name, reason}], container dict | None)."""
+    kind = sniff(data, name)
+    if kind == "eml":
+        raw, skipped, meta = _email_items(data, name); docs = []
+        for payload, fn in raw:
+            k = sniff(payload, fn)
+            if k == "zip":
+                inner, sk = _zip_items(payload, fn); skipped += [{**x, "name": fn + " › " + x["name"]} for x in sk]
+                raw_inner = [(b, fn + " › " + n) for b, n in inner]
+            else: raw_inner = [(payload, fn)]
+            for b, n in raw_inner:
+                try: docs.append(_to_item(b, n, "email"))
+                except Unsupported as e: skipped.append({"name": n, "reason": str(e)})
+        for d in docs: d[2]["email"] = meta
+        if not docs: raise Unsupported("No invoice found in this e-mail: " + "; ".join(f"{x['name']} — {x['reason']}" for x in skipped)[:400])
+        return docs, skipped, {"type": "email", **meta, "documents": len(docs)}
+    if kind == "zip":
+        raw, skipped = _zip_items(data, name); docs = []
+        for b, n in raw:
+            k = sniff(b, n)
+            try:
+                if k == "eml":
+                    sub, sk, _c = expand_upload(b, n); docs += sub; skipped += sk
+                else: docs.append(_to_item(b, n, "zip"))
+            except Unsupported as e: skipped.append({"name": n, "reason": str(e)})
+        for d in docs: d[2].setdefault("archive", name)
+        if not docs: raise Unsupported("No invoice found in this archive: " + "; ".join(f"{x['name']} — {x['reason']}" for x in skipped)[:400])
+        return docs, skipped, {"type": "zip", "file": name, "documents": len(docs)}
+    return [_to_item(data, name, "upload")], [], None
+
+def source_note(src):
+    """One sentence for the Ingest stage about where the document came from and what was done to it."""
+    if not src: return ""
+    bits = []
+    if src.get("email"):
+        m = src["email"]; bits.append(f"Attachment from the e-mail “{m.get('subject') or '(no subject)'}”" + (f" sent by {m['from']}" if m.get("from") else "") + ".")
+    elif src.get("archive"): bits.append(f"Extracted from the archive {src['archive']}.")
+    if src.get("converted"):
+        bits.append(f"{src.get('format_name', 'Image')} ({src.get('original_name')}, {src.get('pages', 1)} page{'s' if src.get('pages', 1) != 1 else ''}) converted to PDF"
+                    + (" and turned upright from the photo's orientation tag" if src.get("format") == "jpg" else "") + "; it will be read with OCR.")
+    return " ".join(bits)
 
 # ---------- http ----------
 LEGACY_NOTE = ("Recorded by an earlier version of this pipeline. Where it says an invoice was “released to payment run”, it means the invoice was approved and "
@@ -1434,6 +1607,32 @@ class H(BaseHTTPRequestHandler):
             runs = load_runs(); sup = supersession(runs)
             for r in runs: r.pop("raw_text", None); r["superseded_by"] = sup.get(r["id"])
             return self.send(200, {"runs": runs, "billed": {pid: float(po_consumed(pid, runs)) for pid in POS}, "pos": POS})
+        if p == "/api/export.csv":
+            import csv
+            runs = load_runs(); sup = supersession(runs); buf = io.StringIO(); raw = csv.writer(buf)
+            safe = lambda v: ("'" + v) if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v    # no spreadsheet formula injection from invoice text
+            w = type("W", (), {"writerow": staticmethod(lambda row: raw.writerow([safe(v) for v in row]))})
+            w.writerow(["run_id", "processed_at", "file", "source", "vendor", "vendor_id", "gstin", "invoice_no", "invoice_date", "po", "net", "tax", "total",
+                        "decision", "automated_decision", "reviewed_by", "review_note", "status_detail", "reason", "superseded_by"])
+            for r in runs:
+                e = r.get("extracted") or {}; last = (r.get("review_log") or [{}])[-1]; src = r.get("source") or {}
+                w.writerow([r["id"], r["ts"], r.get("filename"), src.get("format_name") or "PDF", e.get("vendor"), r.get("vendor_id"), e.get("gstin"), e.get("invoice_no"),
+                            e.get("invoice_date"), r.get("po"), e.get("subtotal"), e.get("tax"), e.get("total"),
+                            "FAILED" if r.get("error") else r.get("decision"), (r.get("auto") or {}).get("decision") or ("" if r.get("error") else r.get("decision")),
+                            last.get("reviewer", ""), last.get("note", ""), "awaiting vendor" if r.get("awaiting_vendor") else "", r.get("headline"), sup.get(r["id"], "")])
+            return self.send(200, ("\ufeff" + buf.getvalue()).encode("utf-8"), "text/csv; charset=utf-8",
+                             {"Content-Disposition": f'attachment; filename="ap-decisions-{datetime.now():%Y%m%d-%H%M}.csv"'})
+        if p == "/api/runs":
+            ids = [i for i in (parse_qs(urlparse(self.path).query).get("ids", [""])[0]).split(",") if re.fullmatch(r"[0-9a-f]{8}", i)][:MAX_BATCH_FILES]
+            out = []
+            for rid in ids:
+                r = own_run(rid); d = snapshot(public(r)) if r else get_run_row(rid)
+                if not d: continue
+                e = d.get("extracted") or {}
+                out.append({"id": rid, "status": d.get("status"), "filename": d.get("filename"), "decision": d.get("decision"), "error": d.get("error"), "headline": d.get("headline"),
+                            "stages": len(d.get("stages") or []), "current": d.get("current"), "invoice_no": e.get("invoice_no"), "vendor": e.get("vendor"), "total": e.get("total"),
+                            "source": d.get("source"), "ocr": d.get("ocr")})
+            return self.send(200, {"runs": out, "stages": len(STAGES)})
         m = re.fullmatch(r"/api/run/([0-9a-f]{8})/document", p)
         if m:
             state, aid, note = attachment_state(m[1])
@@ -1463,7 +1662,7 @@ class H(BaseHTTPRequestHandler):
             if not chunk: break
             left -= len(chunk)
 
-    def _admit(self, nbytes=0):
+    def _admit(self, nbytes=0, count=1):
         """Public-demo limits: requests per minute per client, concurrent runs, runs and megabytes per workspace. Off for a local single-user server."""
         lim = _int_env("AP_RATE_RUNS_PER_MIN", 30 if workspaces_enabled() else 0)
         if lim and not RATE.allow(("run", self.client_ip()), lim):
@@ -1472,13 +1671,65 @@ class H(BaseHTTPRequestHandler):
         if sum(1 for r in list(RUNS.values()) if r.get("status") == "running") >= _int_env("AP_MAX_ACTIVE_RUNS", 8):
             self.fail(503, "The demo is busy processing other invoices. Please try again in a few seconds."); return False
         with conn() as c: n = c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
-        if n >= _int_env("AP_MAX_RUNS_PER_WS", 100):
+        if n + count > _int_env("AP_MAX_RUNS_PER_WS", 100):
             self.fail(429, f"This workspace already holds {n} runs. Use Clear history to start fresh."); return False
         try: used = sum(e.stat().st_size for e in os.scandir(uploads_dir()) if e.is_file())
         except OSError: used = 0
         if used + nbytes > _int_env("AP_MAX_WS_MB", 60) * 1024 * 1024:
             self.fail(413, "This workspace has reached its storage limit. Use Clear history, or use a new browser session."); return False
         return True
+
+    def _review(self, rid, body):
+        """A person's decision on a held invoice. The automated decision is kept next to it, the reason is mandatory, and the
+        same safeguards as automation apply: nothing is approved twice, nothing without a vendor, an invoice number or a total."""
+        try: req = json.loads(body or b"{}"); assert isinstance(req, dict)
+        except Exception: return self.fail(400, 'Expected JSON like {"action": "approve", "note": "PO amendment 4 confirmed by procurement"}.')
+        action = req.get("action"); note = re.sub(r"\s+", " ", str(req.get("note") or "")).strip()[:600]
+        who = re.sub(r"[^\w .'@()&-]", "", str(req.get("reviewer") or "")).strip()[:60] or "Reviewer"
+        if action not in ("approve", "reject", "request_info"): return self.fail(400, "Action must be approve, reject or request_info.")
+        if len(note) < 5: return self.fail(400, "Write a short reason (at least 5 characters). It becomes part of the audit trail.")
+        warnings = []
+        with exclusive_txn() as c:
+            row = c.execute("SELECT body FROM runs WHERE id=?", (rid,)).fetchone()
+            if not row: return self.fail(404, "Run not found.")
+            r = json.loads(row[0])
+            if r.get("error"): return self.fail(409, "This run failed during processing, so there is nothing to review. Retry it first.")
+            if r.get("decision") != "HOLD": return self.fail(409, f"Only invoices on hold need a review decision. This one is already {'approved' if r.get('decision') == 'APPROVE' else 'rejected'}.")
+            runs = history(c)
+            later = supersession(runs).get(rid)
+            if later: return self.fail(409, f"A later submission (run {later}) replaces this held invoice. Review that run instead.")
+            ex = r.get("extracted") or {}
+            if action == "approve":
+                if not r.get("vendor_id"): return self.fail(409, "The vendor could not be matched to the vendor master, so this invoice cannot be approved. Reject it, or onboard the vendor first.")
+                if not ex.get("invoice_no"): return self.fail(409, "The invoice has no invoice number, so a later duplicate could not be caught. Ask the vendor for a corrected invoice.")
+                if ex.get("total") is None: return self.fail(409, "The invoice total could not be read, so there is no amount to approve. Ask the vendor for a corrected invoice.")
+                key = norm_inv(ex.get("invoice_no"))
+                twin = next((o for o in runs if o["id"] != rid and o.get("decision") == "APPROVE" and not o.get("error") and o.get("vendor_id") == r.get("vendor_id")
+                             and norm_inv((o.get("extracted") or {}).get("invoice_no")) == key), None)
+                if twin: return self.fail(409, f"Invoice {ex.get('invoice_no')} from this vendor is already approved (run {twin['id']}). Approving it again would pay it twice.")
+                if r.get("po") in POS and ex.get("subtotal") is not None:
+                    left = D(POS[r["po"]]["net"]) - po_consumed(r["po"], runs)
+                    if D(ex["subtotal"]) > left * (1 + D(RULES["price_tolerance_pct"]) / 100):
+                        warnings.append(f"Approved above the PO balance: net {fmt(ex['subtotal'])} against {fmt(float(left))} left on {r['po']}.")
+                bank = next((st for st in r.get("stages", []) if st.get("key") == "bank"), {})
+                if bank.get("status") in HOLD_STATUSES:
+                    warnings.append("The bank details differ from the vendor master. Confirm them with the vendor on a known phone number before paying.")
+            entry = {"action": action, "note": note, "reviewer": who, "ts": datetime.now().astimezone().isoformat(timespec="seconds"), "warnings": warnings}
+            r.setdefault("review_log", []).append(entry)
+            if action == "request_info":
+                r["awaiting_vendor"] = True
+                r["action"] = "Waiting for the vendor. When the corrected invoice arrives, upload it: it is linked to this run and checked again in full."
+            else:
+                r.setdefault("auto", {"decision": r["decision"], "headline": r["headline"], "action": r.get("action")})
+                r["decision"] = "APPROVE" if action == "approve" else "REJECT"; r["awaiting_vendor"] = False; r["reviewed"] = True
+                r["headline"] = f"{'Approved' if action == 'approve' else 'Rejected'} on review by {who}: {note[:100]}"
+                r["action"] = ("Recommended: schedule payment per the vendor's terms. The PO balance now includes this invoice." if action == "approve"
+                               else "Recommended: tell the vendor why the invoice was rejected and what a corrected invoice must show.")
+            c.execute("UPDATE runs SET decision=?, headline=?, body=? WHERE id=?", (r["decision"], r["headline"], json.dumps(r), rid))
+        live = RUNS.get(rid)
+        if live and live.get("status") == "done": RUNS.pop(rid, None)
+        r.pop("raw_text", None)
+        return self.send(200, {"ok": True, "run": r, "warnings": warnings})
 
     def _post(self):
         p = urlparse(self.path).path
@@ -1498,6 +1749,16 @@ class H(BaseHTTPRequestHandler):
             if not self._admit(os.path.getsize(fp)): return
             aid = store_attachment(read_bytes(fp), name, "sample")
             return self.send(200, {"id": start_run(name, aid)})
+        if p == "/api/process_samples":
+            try: names = [os.path.basename(n) for n in json.loads(body)["names"]][:MAX_BATCH_FILES]
+            except Exception: return self.fail(400, 'Expected JSON like {"names": ["01_acme_clean.pdf", "05_acme_duplicate_resent.pdf"]}.')
+            fps = [os.path.join(INV_DIR, n) for n in names]
+            if not names or any(not n.lower().endswith(".pdf") or not os.path.isfile(f) for n, f in zip(names, fps)): return self.fail(404, "Unknown sample invoice.")
+            if not self._admit(sum(os.path.getsize(f) for f in fps), len(names)): return
+            bid, ids = start_batch([(n, store_attachment(read_bytes(f), n, "sample"), None) for n, f in zip(names, fps)])
+            return self.send(200, {"id": ids[0], "ids": ids, "batch": bid})
+        m = re.fullmatch(r"/api/run/([0-9a-f]{8})/review", p)
+        if m: return self._review(m[1], body)
         if p.startswith("/api/retry/"):
             rid = p.rsplit("/", 1)[-1]
             old = own_run(rid) or get_run_row(rid)
@@ -1511,20 +1772,26 @@ class H(BaseHTTPRequestHandler):
             except AttachmentUnavailable:
                 return self.fail(404, "The original document is no longer available, so this run cannot be retried.")
             if not self._admit(0): return
-            return self.send(200, {"id": start_run(old["filename"], aid, retry_of=old["id"])})
+            return self.send(200, {"id": start_run(old["filename"], aid, retry_of=old["id"], source=old.get("source"))})
         if p == "/api/upload":
             name = safe_name(unquote(self.headers.get("X-Filename", "upload.pdf")))
             if not body: return self.fail(400, "The file is empty.")
-            if not name.lower().endswith(".pdf") or not body.startswith(b"%PDF"):
-                return self.fail(400, "That file is not a PDF. Upload an invoice as a .pdf file.")
+            try: docs, skipped, container = expand_upload(body, name)
+            except Unsupported as e: return self.fail(400, str(e))
             h = sha_hex(body)[:16]
             with UP_LOCK:     # double-click guard: the same file, already running, is not started twice
-                live = next((r for r in list(RUNS.values()) if r["status"] == "running" and r["filename"] == name and r.get("_up") == h and r.get("_ws") == _WS.get()), None)
-                if live: return self.send(200, {"id": live["id"], "reused": True})
-                if not self._admit(len(body)): return
-                aid = store_attachment(body, name, "upload")
-                rid = start_run(name, aid, up_hash=h)
-            return self.send(200, {"id": rid})
+                live = next((r for r in list(RUNS.values()) if r["status"] in ("running", "queued") and r.get("_up") == h and r.get("_upname") == name and r.get("_ws") == _WS.get()), None)
+                if live: return self.send(200, {"id": live["id"], "ids": [x["id"] for x in RUNS.values() if x.get("batch") and x.get("batch") == live.get("batch")] or [live["id"]], "reused": True})
+                if not self._admit(sum(len(d[0]) for d in docs), len(docs)): return
+                if container is None:
+                    pdf, fname, src = docs[0]
+                    aid = store_attachment(pdf, fname, "upload")
+                    rid = start_run(fname, aid, up_hash=h, source=src if src.get("converted") else None); RUNS[rid]["_upname"] = name
+                    return self.send(200, {"id": rid, "ids": [rid], "skipped": skipped})
+                items = [(fname, store_attachment(pdf, fname, container["type"]), src) for pdf, fname, src in docs]
+                bid, ids = start_batch(items)
+                for i in ids: RUNS[i].update(_up=h, _upname=name)
+            return self.send(200, {"id": ids[0], "ids": ids, "batch": bid, "container": container, "skipped": skipped})
         if p == "/api/reset":
             if not reset_enabled():
                 return self.fail(403, "History reset is disabled on this server, so saved runs cannot be erased. (Local development only: set AP_ALLOW_RESET=1.)")

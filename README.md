@@ -6,6 +6,16 @@ PDF invoice → extract (text layer / OCR / optional LLM) → match PO → valid
 > It sleeps after ~15 minutes idle, so the first request can take ~50 s. The optional LLM path is live with a Sarvam key: on 24 Nov 2026 a real Sarvam call filled a grounded bank account on one test invoice, and on a repeat the model returned nothing usable
 > so the rules alone decided (the LLM only ever suggests, and is non-deterministic). The Gemini fallback has so far been exercised against a **mock** server only; check it with `tools/check_llm.py`. There is **no demo video in this repo**. Details in [Verification status](#verification-status).
 
+## What the desk does
+| Area | What you get |
+|---|---|
+| **Inputs** | PDF (digital or scanned), phone photos and scans (JPG, PNG, TIFF incl. multi-page, WebP, BMP, GIF — EXIF-rotated upright), forwarded e-mails (`.eml`: every invoice attachment becomes a run; inline logos/signatures skipped), ZIP batches (up to 25 documents, processed in order). Word/Excel, iPhone HEIC and Outlook `.msg` are refused with a specific fix. The fingerprint of the file *as sent* drives duplicate detection, so a re-sent photo or e-mail is still caught. |
+| **Live run view** | Ten stages appear as they execute, each with the comparison behind it; decision card with amount, reasons and recommended next step; how the document arrived; audit-record download and print. |
+| **Human in the loop** | Held invoices go to the **Review queue**. A reviewer approves, rejects or asks the vendor (a ready-to-copy vendor query is drafted from the failed checks). A reason is mandatory; the automated decision stays on record. Safeguards: no approval without vendor match, invoice number and total, never a second copy of an approved invoice, call-back warning on bank changes, warning when approving above the PO balance. |
+| **Dashboard** | KPIs, value by decision, straight-through rate, source mix, search and filters (incl. *Needs review*), **CSV export** (formula-injection safe). |
+| **Reference data** | Purchase-order register with live balances and utilisation; vendor master (bank accounts masked). |
+| **Help** | *Rules & edge cases* (tolerances, the ten checks, decision matrix, 18 edge cases with one-click samples), *Guide* (how it works, step-by-step, formats, five-minute demo script, FAQ), an optional guided tour (`t`), keyboard shortcuts (`?`), light/dark theme, mobile layout. |
+
 ## Run
 ```
 pip3 install -r requirements.txt

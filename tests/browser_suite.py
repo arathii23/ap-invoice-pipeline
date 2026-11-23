@@ -304,5 +304,46 @@ class BrowserWorkspaceFlow(unittest.TestCase):
             finally: br.close()
 
 
+class BrowserDeskFlows(unittest.TestCase):
+    """The production desk: run the whole sample set as a batch, decide a held invoice as a reviewer, draft a vendor query,
+    and every page (review queue, POs, vendors, rules, guide, tour) renders with no console errors or failed requests."""
+
+    @unittest.skipIf(sync_playwright is None, "playwright not installed")
+    def test_batch_review_and_every_page(self):
+        wsdir = tempfile.mkdtemp(prefix="ap-wsd-")
+        app = SubprocessApp(stage_delay="0", allow_reset=False, env={"AP_WORKSPACES": "1", "AP_WORKSPACES_DIR": wsdir, "AP_LOG_REQUESTS": "0"}).start()
+        self.addCleanup(app.cleanup); self.addCleanup(__import__("shutil").rmtree, wsdir, True)
+        with sync_playwright() as pw:
+            try: br = pw.chromium.launch(channel="chrome", headless=True)
+            except PWError: br = pw.chromium.launch(headless=True)
+            try:
+                problems = []; c = br.new_context(**DESKTOP); p = c.new_page(); p.set_default_timeout(30000)
+                p.on("console", lambda m: problems.append(("console", m.text)) if m.type == "error" else None)
+                p.on("pageerror", lambda e: problems.append(("pageerror", str(e))))
+                p.on("response", lambda r: problems.append(("http", f"{r.status} {r.url}")) if r.status >= 400 else None)
+                p.goto(app.base + "/#/upload"); p.wait_for_selector("#welcome")
+                p.click("#welcome [data-act=samples]"); p.wait_for_url(re.compile(r"#/batch/"))
+                p.wait_for_function("document.querySelector('#bsum') && document.querySelector('#bsum').textContent === 'All done'", timeout=180000)
+                self.assertEqual(p.locator("#btbl tr.r").count(), 11)
+                kpi = {p.locator(".kpi span").nth(i).inner_text(): p.locator(".kpi b").nth(i).inner_text() for i in range(4)}
+                self.assertEqual((kpi["Approved"], kpi["On hold"], kpi["Rejected"]), ("7", "3", "1"))
+                p.goto(app.base + "/#/review"); p.wait_for_selector("table.t tr.r"); self.assertEqual(p.locator("table.t tr.r").count(), 3)
+                p.locator("table.t tr.r", has_text="GF-90871").locator("a.lnk").click(); p.wait_for_selector("#reviewcard")
+                p.click('.opt[data-a="request_info"]'); self.assertIn("information needed before processing", p.inner_text("#draft"))
+                p.click('.opt[data-a="approve"]'); p.click("#rvgo"); self.assertIn("at least 5 characters", p.inner_text("#rverr"))
+                p.fill("#rvnote", "Price increase agreed in PO amendment 2"); p.fill("#rvwho", "Priya (AP)"); p.click("#rvgo")
+                p.wait_for_selector("#reviewlog"); self.assertIn("Approved", p.inner_text("#decision")); self.assertIn("Priya (AP)", p.inner_text("#reviewlog"))
+                self.assertEqual(p.locator("#reviewcard").count(), 0)
+                for route, text in (("/review", "Waiting for you"), ("/pos", "PO-2026-1004"), ("/vendors", "Greenfield Packaging Co"), ("/policy", "Edge cases handled"),
+                                    ("/guide", "A five-minute demo"), ("/history", "Decided without a person")):
+                    p.goto(app.base + "/#" + route); p.wait_for_selector(f"text={text}")
+                p.goto(app.base + "/#/upload"); p.wait_for_selector("#drop"); p.keyboard.press("t"); p.wait_for_selector(".tour-pop")
+                for _ in range(7): p.click("#tnext")
+                self.assertEqual(p.locator(".tour-pop").count(), 0)
+                csv = p.request.get(app.base + "/api/export.csv"); self.assertEqual(csv.status, 200); self.assertIn("Priya (AP)", csv.text())
+                self.assertEqual(problems, [], "browser saw console errors, page errors or HTTP >= 400 responses")
+            finally: br.close()
+
+
 if __name__ == "__main__":
     unittest.main()

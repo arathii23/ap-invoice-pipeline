@@ -8,3 +8,9 @@ services:
     envVars:
       - key: STAGE_DELAY
         value: "0.4"
+      - key: AP_WORKSPACES          # every visitor gets a private, auto-expiring workspace (also the Dockerfile default)
+        value: "1"
+      - key: AP_TRUST_PROXY         # Render's proxy forwards the real client address (needed for the per-visitor rate limit)
+        value: "1"
+      # API keys are NOT in this file. Add them in the Render dashboard -> Environment (never in the repo):
+      #   SARVAM_API_KEY   (tried first)      GEMINI_API_KEY   (tried when Sarvam does not answer)

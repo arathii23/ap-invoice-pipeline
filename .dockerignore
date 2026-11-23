@@ -11,3 +11,4 @@ requirements-dev.txt
 ocr/ocr_bin
 .git/
 .gitignore
+data/workspaces/

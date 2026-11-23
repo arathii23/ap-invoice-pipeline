@@ -3,7 +3,7 @@
 Run:  python3 server.py   then open http://localhost:8765
 Needs pypdf + PyMuPDF (+ an OCR engine for scanned pages). See README.md.
 """
-import contextlib, difflib, hashlib, json, os, re, shutil, sqlite3, subprocess, tempfile, threading, time, uuid
+import contextlib, contextvars, difflib, hashlib, json, os, re, shutil, socket, sqlite3, ssl, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,11 +20,23 @@ MAX_UPLOAD = 10 * 1024 * 1024
 MAX_JSON_BODY = 64 * 1024
 
 # ---------- configuration (read at call time so tests and deployments can isolate DB / uploads via env) ----------
-def db_path(): return os.environ.get("AP_DB") or os.path.join(DATA, "runs.db")
-def uploads_dir(): return os.environ.get("AP_UPLOADS") or os.path.join(DATA, "uploads")
-def reset_enabled(): return os.environ.get("AP_ALLOW_RESET", "") == "1"
+_WS = contextvars.ContextVar("workspace", default=None)      # the visitor's private workspace for this request / run (None = single shared dataset)
+def workspaces_enabled(): return os.environ.get("AP_WORKSPACES", "") == "1"
+def workspaces_dir(): return os.environ.get("AP_WORKSPACES_DIR") or os.path.join(DATA, "workspaces")
+def ws_dir(ws): return os.path.join(workspaces_dir(), ws)
+def _int_env(name, default):
+    try: return int(os.environ.get(name, default))
+    except ValueError: return default
+def db_path():
+    ws = _WS.get()
+    return os.path.join(ws_dir(ws), "runs.db") if ws else (os.environ.get("AP_DB") or os.path.join(DATA, "runs.db"))
+def uploads_dir():
+    ws = _WS.get()
+    return os.path.join(ws_dir(ws), "uploads") if ws else (os.environ.get("AP_UPLOADS") or os.path.join(DATA, "uploads"))
+def reset_enabled():          # with workspaces a reset can only ever touch the caller's OWN workspace, so it is safe to offer publicly
+    return os.environ.get("AP_ALLOW_RESET", "") == "1" or workspaces_enabled()
 def llm_mode(): return os.environ.get("AP_LLM", "auto").lower()
-def llm_model(): return os.environ.get("AP_LLM_MODEL", "claude-haiku-5-5")
+def anthropic_model(): return os.environ.get("AP_LLM_MODEL", "claude-haiku-5-5")
 def stage_delay():
     try: return max(0.0, float(os.environ.get("STAGE_DELAY", "0.55")))
     except ValueError: return 0.55
@@ -59,6 +71,72 @@ def D(x):
 
 def public(r):
     return {k: v for k, v in r.items() if not k.startswith("_")}
+
+def own_run(rid):
+    """An in-memory run, but only if it belongs to the current visitor's workspace."""
+    r = RUNS.get(rid)
+    return r if r is not None and r.get("_ws") == _WS.get() else None
+
+def purge_runs(keep_s=600):
+    now = time.time()
+    for k, v in list(RUNS.items()):
+        if v.get("status") == "done" and now - v.get("_done", now) > keep_s: RUNS.pop(k, None)   # the database is the record; memory is only for live runs
+
+# ---------- private demo workspaces (AP_WORKSPACES=1): each visitor gets an isolated database + upload folder, keyed by a random cookie ----------
+WS_ID = re.compile(r"[0-9a-f]{32}")
+class WorkspaceBusy(Exception): pass
+_TOUCHED = {}
+
+def _ws_names():
+    try: return [n for n in os.listdir(workspaces_dir()) if WS_ID.fullmatch(n) and os.path.isdir(ws_dir(n))]
+    except OSError: return []
+
+def touch_ws(ws):
+    now = time.time()
+    if now - _TOUCHED.get(ws, 0) < 60: return
+    _TOUCHED[ws] = now
+    try: os.utime(ws_dir(ws), None)
+    except OSError: pass
+
+def purge_workspaces(max_idle_s):
+    now, n = time.time(), 0
+    for name in _ws_names():
+        d = ws_dir(name)
+        try: idle = now - os.path.getmtime(d)
+        except OSError: continue
+        if idle > max_idle_s:
+            shutil.rmtree(d, ignore_errors=True); _SCHEMA_READY.discard(os.path.join(d, "runs.db")); _TOUCHED.pop(name, None); n += 1
+    return n
+
+def create_workspace():
+    os.makedirs(workspaces_dir(), exist_ok=True)
+    cap = _int_env("AP_MAX_WORKSPACES", 500)
+    if len(_ws_names()) >= cap:
+        purge_workspaces(3600)
+        if len(_ws_names()) >= cap: raise WorkspaceBusy()
+    ws = uuid.uuid4().hex; os.makedirs(ws_dir(ws)); return ws
+
+def start_janitor():
+    ttl = _int_env("AP_WORKSPACE_TTL_HOURS", 24) * 3600
+    def loop():
+        while True:
+            time.sleep(600)
+            try: purge_workspaces(ttl); purge_runs()
+            except Exception as e: print("janitor error:", e, flush=True)
+    threading.Thread(target=loop, daemon=True).start()
+
+class RateLimiter:
+    def __init__(self): self.hits, self.lock = {}, threading.Lock()
+    def allow(self, key, limit, window=60):
+        now = time.monotonic()
+        with self.lock:
+            q = [t for t in self.hits.get(key, []) if now - t < window]
+            ok = len(q) < limit
+            if ok: q.append(now)
+            self.hits[key] = q
+            if len(self.hits) > 5000: self.hits = {k: v for k, v in self.hits.items() if v and now - v[-1] < window}
+            return ok
+RATE = RateLimiter()
 
 # ---------- persistence ----------
 _SCHEMA_READY = set()
@@ -199,7 +277,7 @@ def migrate_legacy():
 
 def attachment_state(rid):
     """-> (state, attachment_id, note) for a run: 'ok' | 'unavailable' | None (unknown run)."""
-    r = RUNS.get(rid)
+    r = own_run(rid)
     if r and r.get("attachment_id"): return "ok", r["attachment_id"], None
     with conn() as c:
         row = c.execute("SELECT state, attachment_id, note FROM run_attachments WHERE run_id=?", (rid,)).fetchone()
@@ -338,24 +416,166 @@ SCALARS = ["vendor", "gstin", "invoice_no", "invoice_date", "po_ref", "subtotal"
 TAX_TYPES = {"IGST", "CGST", "SGST", "UTGST", "GST", "VAT"}
 MAX_LLM_LINES = 200
 
-def llm_configured():
-    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")) and llm_mode() != "off"
+# ---------- LLM providers ----------
+# Tried in order (AP_LLM_PROVIDERS, default "sarvam,gemini,anthropic"); only providers that have a key are active. The first usable answer
+# wins, and it is still only a SUGGESTION: every value must be grounded in the document text (below) and then pass the business rules.
+# Keys are read from the server's environment only. They are never sent to the browser, stored, or written into error messages.
+LLM_TIMEOUT = 20
+KEY_ENV = {"sarvam": ("SARVAM_API_KEY",), "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+
+class ProviderError(Exception):
+    def __init__(self, msg, status=None, retry_after=None):
+        super().__init__(msg); self.status, self.retry_after = status, retry_after
+
+def provider_key(name):
+    for k in KEY_ENV.get(name, ()):
+        v = (os.environ.get(k) or "").strip()
+        if v: return v
+    return ""
+
+def active_providers():
+    if llm_mode() == "off": return []
+    order = [x.strip().lower() for x in os.environ.get("AP_LLM_PROVIDERS", "sarvam,gemini,anthropic").split(",")]
+    return [n for n in dict.fromkeys(order) if n in KEY_ENV and provider_key(n)]
+
+def llm_configured(): return bool(active_providers())
+
+def provider_model(name):
+    return {"sarvam": os.environ.get("AP_SARVAM_MODEL", "sarvam-105b"), "gemini": os.environ.get("AP_GEMINI_MODEL", "gemini-3.5-flash-lite"),
+            "anthropic": anthropic_model()}[name]
+
+def llm_model():
+    """For display only: the chain that will be tried, e.g. 'sarvam-105b → gemini-3.5-flash-lite'."""
+    return " → ".join(provider_model(n) for n in active_providers())
+
+def _scrub(msg):
+    msg = str(msg)
+    for n in KEY_ENV:
+        k = provider_key(n)
+        if len(k) >= 6: msg = msg.replace(k, "***")
+    return re.sub(r"([?&]key=)[^&\s'\"]+", r"\1***", msg)[:240]
+
+_SSL_CTX = []
+def _ssl_ctx():
+    """Verified TLS, using certifi's CA bundle when installed (a python.org build on macOS has no system CAs until its certificates are installed)."""
+    if not _SSL_CTX:
+        try: import certifi; _SSL_CTX.append(ssl.create_default_context(cafile=certifi.where()))
+        except Exception: _SSL_CTX.append(ssl.create_default_context())
+    return _SSL_CTX[0]
+
+def _http_json(url, headers, payload):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={"Content-Type": "application/json", **headers})
+    try:
+        with urllib.request.urlopen(req, timeout=LLM_TIMEOUT, context=_ssl_ctx()) as resp: raw = resp.read(1_000_000)
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read(4000)); err = err.get("error", err) if isinstance(err, dict) else err
+            detail = (err.get("message") if isinstance(err, dict) else str(err)) or e.reason
+        except Exception: detail = e.reason
+        raise ProviderError(f"HTTPError {e.code}: {_scrub(detail)}", status=e.code, retry_after=e.headers.get("Retry-After"))
+    except (TimeoutError, socket.timeout): raise ProviderError("timeout: no answer within %ds" % LLM_TIMEOUT)
+    except urllib.error.URLError as e: raise ProviderError(f"network error: {_scrub(e.reason)}")
+    try: out = json.loads(raw)
+    except ValueError: raise ProviderError("malformed response: not JSON")
+    if not isinstance(out, dict): raise ProviderError("malformed response: not a JSON object")
+    return out
+
+def _json_object(raw):
+    raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S)
+    if "{" not in raw or "}" not in raw: raise ProviderError("malformed response: no JSON object in the reply")
+    try: got = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+    except ValueError: raise ProviderError("malformed response: the reply is not valid JSON")
+    if not isinstance(got, dict): raise ProviderError("malformed response: expected a JSON object")
+    return got
+
+def _call_sarvam(key, prompt):
+    base = os.environ.get("SARVAM_BASE_URL", "https://api.sarvam.ai").rstrip("/")
+    body = {"model": provider_model("sarvam"), "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 1500,
+            "reasoning_effort": None, "response_format": {"type": "json_object"}}          # extraction needs no reasoning trace; keep it fast and cheap
+    hdr = {"api-subscription-key": key, "Authorization": "Bearer " + key}
+    try: out = _http_json(base + "/v1/chat/completions", hdr, body)
+    except ProviderError as e:
+        if e.status not in (400, 422): raise
+        body.pop("reasoning_effort"); body.pop("response_format"); body["max_tokens"] = 4000       # an option this model rejects: retry with the plain request
+        out = _http_json(base + "/v1/chat/completions", hdr, body)
+    ch = out.get("choices")
+    if not isinstance(ch, list) or not ch or not isinstance(ch[0], dict) or not isinstance(ch[0].get("message"), dict): raise ProviderError("malformed response: no choices[0].message")
+    content = ch[0]["message"].get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ProviderError("malformed response: empty reply" + (" (cut off at the token limit)" if ch[0].get("finish_reason") == "length" else ""))
+    return _json_object(content)
+
+def _call_gemini(key, prompt):
+    base = os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com").rstrip("/")
+    url = f"{base}/v1beta/models/{urllib.parse.quote(provider_model('gemini'), safe='')}:generateContent"
+    body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0, "maxOutputTokens": 2048, "responseMimeType": "application/json"}}
+    try: out = _http_json(url, {"x-goog-api-key": key}, body)
+    except ProviderError as e:
+        if e.status not in (400, 401, 403): raise
+        out = _http_json(url + "?key=" + urllib.parse.quote(key, safe=""), {}, body)         # the documented query-parameter form, if the header form is refused
+    cands = out.get("candidates")
+    if not isinstance(cands, list) or not cands:
+        pf = out.get("promptFeedback"); why = pf.get("blockReason") if isinstance(pf, dict) else None
+        raise ProviderError("malformed response: no candidates" + (f" (prompt blocked: {why})" if why else ""))
+    content = cands[0].get("content") if isinstance(cands[0], dict) else None
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list): raise ProviderError("malformed response: no content parts" + (f" (finish reason {cands[0].get('finishReason')})" if isinstance(cands[0], dict) else ""))
+    raw = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and isinstance(p.get("text", ""), str) and not p.get("thought"))
+    if not raw.strip(): raise ProviderError("malformed response: empty reply")
+    return _json_object(raw)
+
+def _call_anthropic(key, prompt):
+    base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+    out = _http_json(base + "/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"},
+                     {"model": provider_model("anthropic"), "max_tokens": 1500, "messages": [{"role": "user", "content": prompt}]})
+    if not isinstance(out.get("content"), list): raise ProviderError("malformed response: no content list")
+    return _json_object("".join(c.get("text", "") for c in out["content"] if isinstance(c, dict) and isinstance(c.get("text", ""), str)))
+
+_CALLERS = {"sarvam": _call_sarvam, "gemini": _call_gemini, "anthropic": _call_anthropic}
+_COOLDOWN = {}                   # provider -> monotonic time until which it is skipped (bad key / no credits / rate limited)
+_LLM_CALLS = []                  # (monotonic time, workspace) of recent provider calls, for the hourly budgets
+_LLM_LOCK = threading.Lock()
+
+def reset_llm_state():
+    with _LLM_LOCK: _COOLDOWN.clear(); _LLM_CALLS.clear()
+
+def _budget_left():
+    """Hourly caps so a public demo cannot burn through the owner's API credits."""
+    try: total, per = int(os.environ.get("AP_LLM_MAX_PER_HOUR", "120")), int(os.environ.get("AP_LLM_MAX_PER_WS_HOUR", "20"))
+    except ValueError: total, per = 120, 20
+    now, ws = time.monotonic(), _WS.get()
+    with _LLM_LOCK:
+        _LLM_CALLS[:] = [c for c in _LLM_CALLS if now - c[0] < 3600]
+        if len(_LLM_CALLS) >= total: return "the demo's hourly LLM budget is used up"
+        if ws and sum(1 for c in _LLM_CALLS if c[1] == ws) >= per: return "this workspace's hourly LLM budget is used up"
+        _LLM_CALLS.append((now, ws))
+    return None
 
 def llm_call(text):
-    """Returns the parsed JSON object. Raises on transport errors and on responses that are not a JSON object."""
-    key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
-    body = json.dumps({"model": llm_model(), "max_tokens": 1500, "messages": [{"role": "user", "content": LLM_PROMPT + text[:12000]}]}).encode()
-    req = urllib.request.Request(base + "/v1/messages", data=body, method="POST",
-                                 headers={"content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"})
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        out = json.loads(resp.read(1_000_000))
-    if not isinstance(out, dict) or not isinstance(out.get("content"), list): raise ValueError("malformed response: no content list")
-    raw = "".join(c.get("text", "") for c in out["content"] if isinstance(c, dict) and isinstance(c.get("text", ""), str))
-    if "{" not in raw or "}" not in raw: raise ValueError("malformed response: no JSON object in the reply")
-    got = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-    if not isinstance(got, dict): raise ValueError("malformed response: expected a JSON object")
-    return got
+    """-> (grounding candidates dict, provider name, attempts). Raises LlmUnavailable (carrying the attempts) if no provider gave a usable answer."""
+    attempts, prompt = [], LLM_PROMPT + text[:12000]
+    chain = active_providers()
+    if not chain: raise LlmUnavailable("no LLM provider is configured", attempts)
+    limited = _budget_left()
+    if limited: raise LlmUnavailable(limited, attempts)
+    for name in chain:
+        with _LLM_LOCK: wait = _COOLDOWN.get(name, 0) - time.monotonic()
+        if wait > 0: attempts.append({"provider": name, "outcome": "skipped", "reason": f"paused for {int(wait)}s after an earlier failure"}); continue
+        try:
+            got = _CALLERS[name](provider_key(name), prompt)
+            attempts.append({"provider": name, "outcome": "ok", "model": provider_model(name)}); return got, name, attempts
+        except ProviderError as e:
+            attempts.append({"provider": name, "outcome": "error", "reason": _scrub(e)})
+            st = e.status
+            pause = 900 if st in (402, 403) else (min(int(e.retry_after), 120) if st == 429 and str(e.retry_after or "").isdigit() else 30 if st == 429 else 0)
+            if pause:
+                with _LLM_LOCK: _COOLDOWN[name] = time.monotonic() + pause
+        except Exception as e:                                  # a provider must never be able to break a run
+            attempts.append({"provider": name, "outcome": "error", "reason": _scrub(f"{type(e).__name__}: {e}")})
+    raise LlmUnavailable("; ".join(f"{a['provider']}: {a.get('reason', a['outcome'])}" for a in attempts), attempts)
+
+class LlmUnavailable(Exception):
+    def __init__(self, msg, attempts): super().__init__(msg); self.attempts = attempts
 
 # --- grounding: a value is accepted only if it is a whole token on a line of the document, in the right field context ---
 def _lines(text):
@@ -487,12 +707,14 @@ def needs_llm(ex):
 def llm_enrich(ex, text):
     """Fills gaps with grounded values only. Returns an info dict; never raises. Business validation still runs on whatever is accepted."""
     mode = llm_mode()
-    info = {"mode": mode, "configured": llm_configured(), "used": False, "filled": [], "rejected": [], "rejected_reasons": {}, "error": None}
+    info = {"mode": mode, "configured": llm_configured(), "used": False, "provider": None, "attempts": [], "filled": [], "rejected": [], "rejected_reasons": {}, "error": None}
     if not info["configured"] or (mode == "auto" and not needs_llm(ex)): return info
     try:
-        got = llm_call(text); info["used"] = True
+        got, info["provider"], info["attempts"] = llm_call(text); info["used"] = True
+    except LlmUnavailable as e:
+        info["attempts"] = e.attempts; info["error"] = _scrub(e)[:200]; return info
     except Exception as e:
-        info["error"] = f"{type(e).__name__}: {e}"[:160]; return info
+        info["error"] = _scrub(f"{type(e).__name__}: {e}")[:200]; return info
     for k in SCALARS:
         v = got.get(k)
         if v is None or v == "": continue
@@ -972,6 +1194,15 @@ def step(run, key, status, title, detail, extra=None, wait=True):
     return s
 
 def execute(run):
+    tok = _WS.set(run.get("_ws"))                  # the run thread works inside its owner's workspace
+    try: _execute(run)
+    finally: _WS.reset(tok)
+
+def llm_via(llm):
+    failed = [a["provider"] for a in llm.get("attempts", []) if a["outcome"] != "ok"]
+    return (llm.get("provider") or "?") + (f" after {', '.join(failed)} failed" if failed else "")
+
+def _execute(run):
     committed = False
     try:
         data, _ = read_attachment(run["attachment_id"])
@@ -995,7 +1226,7 @@ def execute(run):
         detail = (f"{'OCR' if ocr else 'Text layer'}: read {found}/10 header fields and {len(ex['lines'])} line item(s) from {info['pages']} page(s)."
                   + (" OCR output is not trusted blindly — values are re-validated below." if ocr else ""))
         if llm["used"]:
-            detail += (f" LLM filled gaps ({', '.join(llm['filled']) or 'nothing new'}); values that are not grounded in the document text are discarded"
+            detail += (f" LLM ({llm_via(llm)}) filled gaps ({', '.join(llm['filled']) or 'nothing new'}); values that are not grounded in the document text are discarded"
                        + (f" (discarded: {', '.join(llm['rejected'])})" if llm["rejected"] else "") + ". Business rules below still validate everything it supplied.")
         elif llm["configured"]: detail += " Rules read everything needed, so the LLM was not called."
         if llm["error"]: detail += f" LLM unavailable or unusable ({llm['error']}); continued with rules only."
@@ -1048,7 +1279,7 @@ def execute(run):
         _finish(run)
 
 def _finish(run):
-    run["status"] = "done"; run["current"] = None
+    run["status"] = "done"; run["current"] = None; run["_done"] = time.time()
 
 def new_run_id():
     while True:
@@ -1058,10 +1289,11 @@ def new_run_id():
             if not c.execute("SELECT 1 FROM runs WHERE id=?", (rid,)).fetchone(): return rid
 
 def start_run(filename, attachment_id, retry_of=None, up_hash=None):
+    purge_runs()
     rid = new_run_id()
     run = {"id": rid, "ver": SCHEMA_VERSION, "ts": datetime.now().isoformat(timespec="seconds"), "filename": safe_name(filename), "status": "running",
            "stages": [], "current": "ingest", "attachment_id": attachment_id, "retry_of": retry_of, "decision": None, "headline": "",
-           "file_hash": "", "extracted": {}, "_up": up_hash}
+           "file_hash": "", "extracted": {}, "_up": up_hash, "_ws": _WS.get()}
     RUNS[rid] = run
     threading.Thread(target=execute, args=(run,), daemon=True).start()
     return rid
@@ -1087,38 +1319,76 @@ def supersession(runs):
                 if o.get("decision") == "HOLD": out[o["id"]] = r["id"]
     return out
 
+WS_COOKIE = "ap_ws"
+NO_WS_PATHS = ("/api/config", "/api/samples")        # need no private data, so they never create a workspace
+
 class H(BaseHTTPRequestHandler):
+    timeout = 60                  # a stalled or trickling client cannot hold a thread forever
+    _new_ws = None
+
     def log_message(self, *a): pass
+
+    def client_ip(self):
+        if os.environ.get("AP_TRUST_PROXY") == "1":                      # behind Render's proxy the real client is the first X-Forwarded-For hop
+            fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if fwd: return fwd[:64]
+        return self.client_address[0]
+
+    def secure(self): return os.environ.get("AP_COOKIE_SECURE") == "1" or self.headers.get("X-Forwarded-Proto") == "https"
 
     def send(self, code, body, ctype="application/json", headers=None):
         b = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code); self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b))); self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Content-Type-Options", "nosniff"); self.send_header("X-Frame-Options", "SAMEORIGIN"); self.send_header("Referrer-Policy", "no-referrer")
+        if self._new_ws:
+            ttl = _int_env("AP_WORKSPACE_TTL_HOURS", 24) * 3600
+            self.send_header("Set-Cookie", f"{WS_COOKIE}={self._new_ws}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax" + ("; Secure" if self.secure() else ""))
         for k, v in (headers or {}).items(): self.send_header(k, v)
         self.end_headers()
         self.wfile.write(b)
+        if (self.command != "GET" or code >= 400) and os.environ.get("AP_LOG_REQUESTS", "1") != "0":                           # one line per write or error (never per poll), for the host's log view
+            ws = _WS.get(); print(f"{datetime.now():%H:%M:%S} {self.client_ip()} {self.command} {urlparse(self.path).path} -> {code}" + (f" ws={ws[:6]}" if ws else ""), flush=True)
 
     def fail(self, code, msg): self.send(code, {"error": msg})
 
-    def do_GET(self):
-        try: self._get()
-        except Exception as e: self.fail(500, f"Internal error ({type(e).__name__}).")
+    def _dispatch(self, fn):
+        self._new_ws = None; tok = None
+        try:
+            path = unquote(urlparse(self.path).path)
+            if workspaces_enabled() and path.startswith("/api/") and path not in NO_WS_PATHS:
+                m = re.search(r"(?:^|;\s*)%s=([0-9a-f]{32})(?:;|$)" % WS_COOKIE, self.headers.get("Cookie") or "")
+                ws = m.group(1) if m else None
+                if not ws or not os.path.isdir(ws_dir(ws)):                  # no cookie, or an expired/unknown id: a fresh private workspace (an unknown id grants nothing)
+                    lim = _int_env("AP_RATE_NEW_WS_PER_10MIN", 30)         # one address cannot fill the workspace quota by discarding its cookie
+                    if lim and not RATE.allow(("ws", self.client_ip()), lim, 600): return self.fail(429, "Too many new sessions from this address. Please wait a few minutes.")
+                    try: ws = create_workspace()
+                    except WorkspaceBusy: return self.fail(503, "The demo is at capacity right now. Please try again in a few minutes.")
+                    self._new_ws = ws
+                touch_ws(ws); tok = _WS.set(ws)
+            fn()
+        except (BrokenPipeError, ConnectionResetError): pass
+        except Exception as e:
+            try: self.fail(500, f"Internal error ({type(e).__name__}).")
+            except Exception: pass
+        finally:
+            if tok is not None: _WS.reset(tok)
 
-    def do_POST(self):
-        try: self._post()
-        except Exception as e: self.fail(500, f"Internal error ({type(e).__name__}).")
+    def do_GET(self): self._dispatch(self._get)
+    def do_POST(self): self._dispatch(self._post)
 
     def _get(self):
         p = unquote(urlparse(self.path).path)
         if p in ("/", "/index.html"):
             return self.send(200, read_bytes(os.path.join(BASE, "static", "index.html")), "text/html; charset=utf-8")
+        if p == "/healthz": return self.send(200, b"ok", "text/plain")
         if p == "/api/samples":
             return self.send(200, sorted(f for f in os.listdir(INV_DIR) if f.endswith(".pdf")))
         if p == "/api/config":
             return self.send(200, {"rules": RULES, "stages": STAGES, "vendors": VENDORS, "pos": POS, "reset_enabled": reset_enabled(),
+                                   "workspaces": workspaces_enabled(), "workspace_ttl_hours": _int_env("AP_WORKSPACE_TTL_HOURS", 24),
                                    "limits": {"max_upload_mb": MAX_UPLOAD // (1024 * 1024)},
-                                   "extraction": {"llm_configured": llm_configured(), "llm_mode": llm_mode(), "llm_model": llm_model(), "ocr_engines": ocr_engines()}})
+                                   "extraction": {"llm_configured": llm_configured(), "llm_mode": llm_mode(), "llm_model": llm_model(), "llm_providers": active_providers(), "ocr_engines": ocr_engines()}})
         if p == "/api/dashboard":
             runs = load_runs(); sup = supersession(runs)
             for r in runs: r.pop("raw_text", None); r["superseded_by"] = sup.get(r["id"])
@@ -1135,7 +1405,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, data, "application/pdf", {"Content-Disposition": f'inline; filename="{name}"'})
         m = re.fullmatch(r"/api/run/([^/]+)", p)
         if m:
-            rid = m[1]; r = RUNS.get(rid)
+            rid = m[1]; r = own_run(rid)
             d = snapshot(public(r)) if r else get_run_row(rid)
             if not d: return self.fail(404, "not found")
             if d.get("status") == "done" or not r: d["document"] = document_info(rid)
@@ -1152,6 +1422,23 @@ class H(BaseHTTPRequestHandler):
             if not chunk: break
             left -= len(chunk)
 
+    def _admit(self, nbytes=0):
+        """Public-demo limits: requests per minute per client, concurrent runs, runs and megabytes per workspace. Off for a local single-user server."""
+        lim = _int_env("AP_RATE_RUNS_PER_MIN", 30 if workspaces_enabled() else 0)
+        if lim and not RATE.allow(("run", self.client_ip()), lim):
+            self.fail(429, "Too many invoices submitted in a short time. Please wait a minute and try again."); return False
+        if not workspaces_enabled(): return True
+        if sum(1 for r in list(RUNS.values()) if r.get("status") == "running") >= _int_env("AP_MAX_ACTIVE_RUNS", 8):
+            self.fail(503, "The demo is busy processing other invoices. Please try again in a few seconds."); return False
+        with conn() as c: n = c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        if n >= _int_env("AP_MAX_RUNS_PER_WS", 100):
+            self.fail(429, f"This workspace already holds {n} runs. Use Clear history to start fresh."); return False
+        try: used = sum(e.stat().st_size for e in os.scandir(uploads_dir()) if e.is_file())
+        except OSError: used = 0
+        if used + nbytes > _int_env("AP_MAX_WS_MB", 60) * 1024 * 1024:
+            self.fail(413, "This workspace has reached its storage limit. Use Clear history, or use a new browser session."); return False
+        return True
+
     def _post(self):
         p = urlparse(self.path).path
         try: n = int(self.headers.get("Content-Length") or 0)
@@ -1167,11 +1454,12 @@ class H(BaseHTTPRequestHandler):
             except Exception: return self.fail(400, 'Expected JSON like {"name": "01_acme_clean.pdf"}.')
             fp = os.path.join(INV_DIR, name)
             if not name.lower().endswith(".pdf") or not os.path.isfile(fp): return self.fail(404, "Unknown sample invoice.")
+            if not self._admit(os.path.getsize(fp)): return
             aid = store_attachment(read_bytes(fp), name, "sample")
             return self.send(200, {"id": start_run(name, aid)})
         if p.startswith("/api/retry/"):
             rid = p.rsplit("/", 1)[-1]
-            old = RUNS.get(rid) or get_run_row(rid)
+            old = own_run(rid) or get_run_row(rid)
             if not old: return self.fail(404, "Run not found.")
             if not old.get("error"):
                 return self.fail(409, "Only runs that failed during processing can be retried. This run already has a decision; upload a corrected invoice instead.")
@@ -1181,6 +1469,7 @@ class H(BaseHTTPRequestHandler):
                 read_attachment(aid)
             except AttachmentUnavailable:
                 return self.fail(404, "The original document is no longer available, so this run cannot be retried.")
+            if not self._admit(0): return
             return self.send(200, {"id": start_run(old["filename"], aid, retry_of=old["id"])})
         if p == "/api/upload":
             name = safe_name(unquote(self.headers.get("X-Filename", "upload.pdf")))
@@ -1189,20 +1478,25 @@ class H(BaseHTTPRequestHandler):
                 return self.fail(400, "That file is not a PDF. Upload an invoice as a .pdf file.")
             h = sha_hex(body)[:16]
             with UP_LOCK:     # double-click guard: the same file, already running, is not started twice
-                live = next((r for r in list(RUNS.values()) if r["status"] == "running" and r["filename"] == name and r.get("_up") == h), None)
+                live = next((r for r in list(RUNS.values()) if r["status"] == "running" and r["filename"] == name and r.get("_up") == h and r.get("_ws") == _WS.get()), None)
                 if live: return self.send(200, {"id": live["id"], "reused": True})
+                if not self._admit(len(body)): return
                 aid = store_attachment(body, name, "upload")
                 rid = start_run(name, aid, up_hash=h)
             return self.send(200, {"id": rid})
         if p == "/api/reset":
             if not reset_enabled():
                 return self.fail(403, "History reset is disabled on this server, so saved runs cannot be erased. (Local development only: set AP_ALLOW_RESET=1.)")
-            with exclusive_txn() as c:       # a consistent safety copy first, next to the database (never in a served folder)
-                bdir = os.path.join(os.path.dirname(os.path.abspath(db_path())), "reset-backups"); os.makedirs(bdir, exist_ok=True)
-                src = sqlite3.connect(f"file:{db_path()}?mode=ro", uri=True); dst = sqlite3.connect(os.path.join(bdir, f"runs-{datetime.now():%Y%m%d-%H%M%S-%f}.db"))
-                src.backup(dst); dst.close(); src.close()
+            mine = _WS.get()
+            with exclusive_txn() as c:
+                if not mine:     # a consistent safety copy first, next to the database (never in a served folder); a throw-away visitor workspace needs none
+                    bdir = os.path.join(os.path.dirname(os.path.abspath(db_path())), "reset-backups"); os.makedirs(bdir, exist_ok=True)
+                    src = sqlite3.connect(f"file:{db_path()}?mode=ro", uri=True); dst = sqlite3.connect(os.path.join(bdir, f"runs-{datetime.now():%Y%m%d-%H%M%S-%f}.db"))
+                    src.backup(dst); dst.close(); src.close()
                 c.execute("DELETE FROM runs"); c.execute("DELETE FROM run_attachments")
-            RUNS.clear()
+                if mine: c.execute("DELETE FROM attachments")
+            if mine: shutil.rmtree(uploads_dir(), ignore_errors=True)    # frees the workspace's storage allowance; the history is gone, so are its documents
+            for k in [k for k, v in list(RUNS.items()) if v.get("_ws") == mine]: RUNS.pop(k, None)    # only this visitor's runs
             return self.send(200, {"ok": True})
         self.fail(404, "not found")
 
@@ -1214,5 +1508,7 @@ def make_server(host, port):
 if __name__ == "__main__":
     init_store()
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", "8765"))
-    print(f"AP pipeline on http://localhost:{port}   (history reset {'ENABLED' if reset_enabled() else 'disabled'})", flush=True)
+    if workspaces_enabled(): start_janitor()
+    print(f"AP pipeline on http://localhost:{port}   (history reset {'ENABLED' if reset_enabled() else 'disabled'}; "
+          f"{'private per-visitor workspaces' if workspaces_enabled() else 'single shared dataset'}; LLM providers: {', '.join(active_providers()) or 'none (rules only)'})", flush=True)
     make_server(host, port).serve_forever()

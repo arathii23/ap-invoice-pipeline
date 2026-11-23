@@ -4,7 +4,7 @@ Run:  python3 server.py   then open http://localhost:8765
 Needs pypdf + PyMuPDF (+ an OCR engine for scanned pages). See README.md.
 """
 import contextlib, contextvars, difflib, hashlib, json, os, re, shutil, socket, sqlite3, ssl, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, unquote
@@ -68,6 +68,14 @@ def hook(name, run=None):
 
 def D(x):
     return Decimal(str(x))
+
+def ts_text(ts):
+    """A stored run timestamp as text for an explanation: offset-aware ones in UTC (labelled), older naive ones as they were stored."""
+    try:
+        d = datetime.fromisoformat(ts)
+        if d.tzinfo: return d.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError): pass
+    return str(ts)[:16].replace("T", " ")
 
 def public(r):
     return {k: v for k, v in r.items() if not k.startswith("_")}
@@ -1036,12 +1044,12 @@ def run_checks(runs, ex, file_hash, ocr_used):
     if rel == "duplicate_of_approved":
         r = sub["of"][-1]
         yield ("duplicate", "fail_reject", "Duplicate detection",
-               f"Already approved: {r['invoice_no']} on {r['ts'][:16].replace('T', ' ')} ({sub['by']}; run {r['id']}). Approving it again would pay it twice.",
+               f"Already approved: {r['invoice_no']} on {ts_text(r['ts'])} ({sub['by']}; run {r['id']}). Approving it again would pay it twice.",
                {"dup_of": r["id"], "compare": [row("Invoice no", ex.get("invoice_no"), r["invoice_no"], False), row("Earlier run", "this run", f"{r['filename']} · {r['decision']}", False)]})
     elif rel == "unchanged_resubmission":
         r = sub["of"][-1]
         yield ("duplicate", "fail_hold", "Duplicate detection",
-               f"Resubmitted without changes: {r['invoice_no'] or 'this invoice'} is already on hold (run {r['id']}, {r['ts'][:16].replace('T', ' ')}). Nothing new to evaluate — "
+               f"Resubmitted without changes: {r['invoice_no'] or 'this invoice'} is already on hold (run {r['id']}, {ts_text(r['ts'])}). Nothing new to evaluate — "
                "it stays on hold until a corrected invoice arrives. It is not a paid duplicate, so it is not rejected.",
                {"related_to": r["id"], "compare": [row("Invoice no", ex.get("invoice_no"), r["invoice_no"], True), row("Earlier run", "this run", f"{r['filename']} · {r['decision']}", None)]})
     elif rel == "corrected_resubmission":
@@ -1049,7 +1057,7 @@ def run_checks(runs, ex, file_hash, ocr_used):
         shown = lambda v: "not stated" if v is None or v == "" else str(v)          # never show a raw None to a finance reader
         what = "; ".join(f"{c['field']}: {shown(c['before'])} → {shown(c['after'])}" for c in sub["changes"][:6])
         yield ("duplicate", "warn", "Duplicate detection",
-               f"Corrected resubmission of held invoice {r['invoice_no']} (run {r['id']}, {r['ts'][:16].replace('T', ' ')}). Changed: {what}. It is evaluated from scratch below; "
+               f"Corrected resubmission of held invoice {r['invoice_no']} (run {r['id']}, {ts_text(r['ts'])}). Changed: {what}. It is evaluated from scratch below; "
                "the earlier held submission stays in history as the audit trail and cannot be approved separately.",
                {"related_to": r["id"], "compare": [row(c["field"].capitalize(), shown(c["after"]), f"{shown(c['before'])} (earlier, held)", None) for c in sub["changes"][:8]]
                 + [row("Earlier run", "this run", f"{r['filename']} · {r['decision']}", None)]})
@@ -1324,7 +1332,7 @@ def new_run_id():
 def start_run(filename, attachment_id, retry_of=None, up_hash=None):
     purge_runs()
     rid = new_run_id()
-    run = {"id": rid, "ver": SCHEMA_VERSION, "ts": datetime.now().isoformat(timespec="seconds"), "filename": safe_name(filename), "status": "running",
+    run = {"id": rid, "ver": SCHEMA_VERSION, "ts": datetime.now().astimezone().isoformat(timespec="seconds"), "filename": safe_name(filename), "status": "running",
            "stages": [], "current": "ingest", "attachment_id": attachment_id, "retry_of": retry_of, "decision": None, "headline": "",
            "file_hash": "", "extracted": {}, "_up": up_hash, "_ws": _WS.get()}
     RUNS[rid] = run

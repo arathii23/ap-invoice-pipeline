@@ -3,8 +3,8 @@
 PDF invoice → extract (text layer / OCR / optional LLM) → match PO → validate → **APPROVE / HOLD / REJECT** with reasons a finance manager can read.
 
 > **Delivery status, plainly.** A public copy runs on Render's **free** tier: <https://ap-invoice-pipeline.onrender.com> (deployed from this repo's `main` branch).
-> It sleeps after ~15 minutes idle, so the first request can take ~50 s. The optional LLM path has been proven against **mock** providers; real Sarvam / Gemini
-> calls work only once keys are set on the host and are checked with `tools/check_llm.py`. There is **no demo video in this repo**. Details in [Verification status](#verification-status).
+> It sleeps after ~15 minutes idle, so the first request can take ~50 s. The optional LLM path is live with a Sarvam key: on 24 Nov 2026 a real Sarvam call filled a grounded bank account on one test invoice, and on a repeat the model returned nothing usable
+> so the rules alone decided (the LLM only ever suggests, and is non-deterministic). The Gemini fallback has so far been exercised against a **mock** server only; check it with `tools/check_llm.py`. There is **no demo video in this repo**. Details in [Verification status](#verification-status).
 
 ## Run
 ```
@@ -97,6 +97,7 @@ The model never decides. Extraction (rules, OCR, optional LLM) produces fields; 
 - Each upload is stored once under a unique id (`data/uploads/<uuid>.pdf`, read-only, checksum verified on every read). The original filename is a label only, so two uploads named `invoice.pdf` never overwrite each other. Preview, *Open PDF* and *Retry* all use the run's own stored document: `GET /api/run/<id>/document`. Retry is offered only for runs that failed to process.
 - **Older history** (written before this version) is never rewritten. At start-up each old run is linked to its original file *only if* a file with the checksum recorded on that run still exists; otherwise the run shows "Original document not available" with the reason (for example "overwritten by a later upload"). A wrong document is never shown. Old runs keep their stored wording; runs saying "released to payment run" carry a note that no payment was ever released or sent.
 - Oversize (> 10 MB), empty and non-PDF uploads are rejected with clear messages.
+- Run timestamps are stored with their UTC offset, so each browser shows the visitor's own local time; times quoted inside explanations are labelled UTC. History written before this change keeps its stored (offset-less) wording.
 
 ## Extraction
 - Text layer first; pages with no text are OCR'd page by page. OCR engine chain: Apple Vision (macOS) → Tesseract → RapidOCR (pip, any OS).
@@ -122,7 +123,7 @@ AP_TEST_REAL_LLM=1 SARVAM_API_KEY=… GEMINI_API_KEY=… python3 -m unittest tes
 | Backend regression suites (`discover -s tests`) | run and passing locally (macOS, Python 3.13), including provider-fallback and workspace-isolation suites |
 | Browser suite (Chrome, desktop + mobile, refresh, restart, retry, filters, previews) | run and passing locally |
 | OCR | Apple Vision, RapidOCR and Tesseract (5.5, macOS) exercised locally, incl. the scanned sample through the full pipeline (`tests/test_15_ocr.py`). On Render (Linux, Tesseract from Debian, 512 MB) all 11 bundled samples were run live on 24 Nov 2026 with the expected decisions; the scanned sample was read in ~11 s and approved. Other scanned documents are untested there |
-| LLM extraction | request shape, fallback, cooldowns and grounding proven against **mock** Sarvam/Gemini servers; real-service calls are checked only when you run `tools/check_llm.py` / the opt-in `tests/test_llm_real.py` with real keys |
+| LLM extraction | request shape, fallback, cooldowns and grounding proven against **mock** Sarvam/Gemini servers. **Sarvam verified live on Render (24 Nov 2026)**: answered on the first attempt, one run filled a grounded field, a repeat run returned nothing usable and was handled safely. **Gemini not yet run against the real service** (`tools/check_llm.py` or the opt-in `tests/test_llm_real.py` with a real key does that) |
 | Docker | the image builds and runs on Render (free plan); not tested on any other host |
 | Public URL | <https://ap-invoice-pipeline.onrender.com> on Render's free tier (sleeps when idle, ephemeral disk). No authentication — private workspaces separate visitors, they are not a security boundary |
 | 5-minute demo video | not part of this repository |

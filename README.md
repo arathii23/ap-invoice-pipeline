@@ -21,6 +21,7 @@ Data lives in `data/` (`runs.db`, `uploads/`) next to the reference files `pos.j
 | `STAGE_DELAY` | `0.55` | seconds between stages on the live run view (cosmetic; the decision is already committed) |
 | `AP_OCR_ENGINE` | auto | force an OCR engine |
 | `AP_OCR_MAX_SIDE`, `AP_OCR_MAX_PAGES`, `AP_OCR_TIMEOUT_S` | `960`, `8`, `180` | OCR bounds: pixels on the long side used for text detection, scanned pages read per document, seconds per page |
+| `AP_OCR_MAX_RSS_MB` | `0` (off); Docker image `290` | the OCR worker process is killed if its memory passes this, and the run is held with a clear error instead of the host running out of memory |
 | `AP_LLM` | `auto` | `auto` = ask the LLM only when the rules left gaps, `always`, `off` |
 | `SARVAM_API_KEY` | — | Sarvam key (tried **first**) |
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | — | Gemini key (tried when Sarvam does not answer) |

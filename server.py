@@ -333,6 +333,29 @@ def ocr_render_dpi(rect, dpi=200, max_side_px=2400):
     """Render resolution for OCR: 200 dpi, but never more than max_side_px on the long side (a poster-sized page must not become a 200 MB bitmap)."""
     return max(30, int(min(dpi, max_side_px * 72.0 / max(rect.width, rect.height, 1.0))))
 
+def _rss_mb(pid):
+    """Resident memory of a process in MB (Linux /proc, else ps); None if it cannot be read."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"): return int(line.split()[1]) / 1024
+    except OSError: pass
+    try: return int(subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, timeout=2).stdout.strip() or 0) / 1024
+    except Exception: return None
+
+def _run_worker(cmd, env, timeout_s, max_rss_mb):
+    """Run a child, watching its memory: -> (exit code | 'limit' | 'timeout', stdout, stderr, peak MB). Over max_rss_mb (0 = unlimited) the child is killed,
+    so a small host's container limit is never reached and the web server survives."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    deadline, peak = time.monotonic() + timeout_s, 0.0
+    while True:
+        try: out, err = p.communicate(timeout=0.15); return p.returncode, out, err, peak
+        except subprocess.TimeoutExpired: pass
+        rss = _rss_mb(p.pid) or 0.0; peak = max(peak, rss)
+        why = "limit" if (max_rss_mb and rss > max_rss_mb) else "timeout" if time.monotonic() > deadline else None
+        if why:
+            p.kill(); out, err = p.communicate(); return why, out, err, peak
+
 def _ocr_run(png, engine):
     with tempfile.TemporaryDirectory() as td:
         f = os.path.join(td, "page.png"); open(f, "wb").write(png)
@@ -341,11 +364,14 @@ def _ocr_run(png, engine):
         if engine == "tesseract":
             return subprocess.run(["tesseract", f, "stdout", "--psm", "6"], check=True, capture_output=True, text=True).stdout.strip()
         if engine == "rapidocr":      # in a child process: its memory is returned afterwards, and an out-of-memory kill takes down only the child
-            r = subprocess.run([sys.executable, os.path.join(BASE, "ocr_worker.py"), f], capture_output=True, text=True, timeout=_int_env("AP_OCR_TIMEOUT_S", 180),
-                               env={**{k: v for k, v in os.environ.items() if not re.search(r"KEY|TOKEN|SECRET", k, re.I)}, "PYTHONDONTWRITEBYTECODE": "1"})
-            if r.returncode != 0:
-                raise RuntimeError("OCR worker " + (f"was killed (signal {-r.returncode}; out of memory?)" if r.returncode < 0 else f"failed: {(r.stderr or '').strip()[-200:]}"))
-            return r.stdout.strip()
+            env = {**{k: v for k, v in os.environ.items() if not re.search(r"KEY|TOKEN|SECRET", k, re.I)}, "PYTHONDONTWRITEBYTECODE": "1"}
+            code, out, err, peak = _run_worker([sys.executable, os.path.join(BASE, "ocr_worker.py"), f], env, _int_env("AP_OCR_TIMEOUT_S", 180), _int_env("AP_OCR_MAX_RSS_MB", 0))
+            print(f"ocr worker: exit {code}, peak {peak:.0f} MB" + (f" | {err.strip().splitlines()[-1]}" if err.strip() else ""), flush=True)
+            if code == "limit": raise RuntimeError(f"OCR needs more memory than this host allows ({_int_env('AP_OCR_MAX_RSS_MB', 0)} MB); the document was not read. Upload a text-based PDF.")
+            if code == "timeout": raise RuntimeError(f"OCR did not finish within {_int_env('AP_OCR_TIMEOUT_S', 180)} s")
+            if code != 0:
+                raise RuntimeError("OCR worker " + (f"was killed (signal {-code}; out of memory?)" if code < 0 else f"failed: {err.strip()[-200:]}"))
+            return out.strip()
     raise RuntimeError(f"unknown OCR engine {engine}")
 
 def ocr_png(png, engine):

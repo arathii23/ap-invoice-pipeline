@@ -44,20 +44,38 @@ class OcrLimits(AppTestCase):
             ts = [threading.Thread(target=self.server.ocr_png, args=(b"x", "rapidocr")) for _ in range(6)]; [t.start() for t in ts]; [t.join(10) for t in ts]
         self.assertEqual(peak[0], 1)
 
-    def test_a_killed_ocr_worker_fails_the_run_politely_and_the_server_stays_up(self):
+    def run_scan_with_worker(self, result):
         os.environ["AP_OCR_ENGINE"] = "rapidocr"; self.addCleanup(os.environ.pop, "AP_OCR_ENGINE", None)
-        killed = subprocess.CompletedProcess([], -9, "", "")
-        with mock.patch.object(self.server, "ocr_engines", lambda: ["rapidocr"]), mock.patch.object(self.server.subprocess, "run", return_value=killed):
-            r = self.app.submit(make_invoice(invoice_no="INV-OOM-0001", as_scan=True), "scan.pdf")
-        self.assertEqual(r["status"], "done"); self.assertIn("OCR worker was killed", r["error"]); self.assertEqual(r["decision"], "HOLD")   # a processing failure is held for a retry, never approved
-        self.assertEqual(self.app.get("/api/config")[0], 200)                         # still serving
-        self.assertEqual(self.app.post(f"/api/retry/{r['id']}")[0], 200)              # and the run can be retried
+        with mock.patch.object(self.server, "ocr_engines", lambda: ["rapidocr"]), mock.patch.object(self.server, "_run_worker", return_value=result):
+            return self.app.submit(make_invoice(invoice_no="INV-OOM-0001", as_scan=True), "scan.pdf")
+
+    def check_failed_politely(self, r, text):
+        self.assertEqual(r["status"], "done"); self.assertIn(text, r["error"]); self.assertEqual(r["decision"], "HOLD")      # a processing failure is held for a retry, never approved
+        self.assertEqual(self.app.get("/api/config")[0], 200)                                                                # still serving
+        self.assertEqual(self.app.post(f"/api/retry/{r['id']}")[0], 200)                                                    # and the run can be retried
+
+    def test_a_killed_ocr_worker_fails_the_run_politely_and_the_server_stays_up(self):
+        self.check_failed_politely(self.run_scan_with_worker((-9, "", "", 400.0)), "OCR worker was killed")
+
+    def test_a_worker_over_the_memory_limit_is_stopped_and_reported(self):
+        self.check_failed_politely(self.run_scan_with_worker(("limit", "", "", 300.0)), "more memory than this host allows")
+
+    def test_a_worker_that_hangs_is_stopped_and_reported(self):
+        self.check_failed_politely(self.run_scan_with_worker(("timeout", "", "", 100.0)), "did not finish within")
+
+    def test_the_watchdog_really_kills_a_child_that_grows_past_the_limit(self):
+        hog = [sys.executable, "-c", "b = bytearray(250 * 1024 * 1024); b[::4096] = b'x' * len(b[::4096]); import time; time.sleep(60)"]
+        t = time.time(); code, out, err, peak = self.server._run_worker(hog, dict(os.environ), 60, 100)
+        self.assertEqual(code, "limit"); self.assertLess(time.time() - t, 20, "must be stopped long before the child finishes"); self.assertGreater(peak, 100)
+        code, out, err, peak = self.server._run_worker([sys.executable, "-c", "print('fine')"], dict(os.environ), 30, 100)       # an honest child is untouched
+        self.assertEqual((code, out.strip()), (0, "fine"))
+        code, *_ = self.server._run_worker([sys.executable, "-c", "import time; time.sleep(30)"], dict(os.environ), 1, 0); self.assertEqual(code, "timeout")
 
     def test_secrets_are_not_handed_to_the_ocr_worker(self):
         seen = {}
-        def fake(cmd, **kw): seen.update(kw["env"]); return subprocess.CompletedProcess(cmd, 0, "line one", "")
+        def fake(cmd, env, timeout_s, max_rss_mb): seen.update(env); return 0, "line one", "", 1.0
         os.environ.update(SARVAM_API_KEY="s-secret", GEMINI_API_KEY="g-secret", SOME_TOKEN="t-secret"); self.addCleanup(lambda: [os.environ.pop(k, None) for k in ("SARVAM_API_KEY", "GEMINI_API_KEY", "SOME_TOKEN")])
-        with mock.patch.object(self.server.subprocess, "run", fake): self.assertEqual(self.server._ocr_run(b"png", "rapidocr"), "line one")
+        with mock.patch.object(self.server, "_run_worker", fake): self.assertEqual(self.server._ocr_run(b"png", "rapidocr"), "line one")
         self.assertFalse([k for k in seen if "KEY" in k or "TOKEN" in k or "SECRET" in k]); self.assertIn("PATH", seen)
 
 

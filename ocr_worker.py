@@ -18,13 +18,34 @@ def group_lines(boxes):
     return "\n".join("   ".join(t for _, t in sorted(l[1])) for l in lines)
 
 
+def one_thread_sessions():
+    """RapidOCR builds its ONNX sessions with onnxruntime's defaults: one worker thread (and its scratch memory) per CPU core of the HOST. On a shared
+    container host that is dozens of threads for a task that needs one; pin to a single thread."""
+    import onnxruntime as ort
+    import rapidocr_onnxruntime.utils as u
+
+    class Opt(ort.SessionOptions):
+        def __init__(self):
+            super().__init__(); self.intra_op_num_threads = 1; self.inter_op_num_threads = 1; self.enable_mem_pattern = False
+    u.SessionOptions = Opt
+
+
+def peak_rss_mb():
+    try:
+        import resource, platform
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1048576 if platform.system() == "Darwin" else 1024)
+    except Exception: return -1
+
+
 def main(path):
+    one_thread_sessions()
     from rapidocr_onnxruntime import RapidOCR
     try: side = int(os.environ.get("AP_OCR_MAX_SIDE", "960"))
     except ValueError: side = 960
     # RapidOCR's own default (grow to a minimum side of 736, never shrink) runs a whole 200-dpi page through the detector: ~900 MB peak. Shrinking: ~300 MB, same fields read.
     res, _ = RapidOCR(det_limit_type="max", det_limit_side_len=side, det_model_path=None)(path)
     sys.stdout.write(group_lines([(b[0][0], (b[0][1] + b[2][1]) / 2, t) for b, t, _ in (res or [])]))
+    sys.stderr.write(f"ocr-worker peak {peak_rss_mb():.0f} MB, {os.cpu_count()} host cpus\n")
 
 
 if __name__ == "__main__":

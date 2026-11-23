@@ -1,4 +1,5 @@
 pypdf
 PyMuPDF
+pillow               # photos and scans (JPG, PNG, TIFF, WebP) are normalised to PDF; EXIF rotation
 rapidocr-onnxruntime   # cross-platform OCR; on macOS the bundled Apple Vision tool is used first
-certifi              # CA bundle for the LLM providers' HTTPS calls
+certifi              # CA bundle for the LLM providers HTTPS calls

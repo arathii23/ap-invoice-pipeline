@@ -1,0 +1,3 @@
+pypdf
+PyMuPDF
+rapidocr-onnxruntime   # cross-platform OCR; on macOS the bundled Apple Vision tool is used first

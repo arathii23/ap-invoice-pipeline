@@ -1,0 +1,13 @@
+__pycache__/
+data/runs.db
+data/uploads/
+tests/shots/
+data/reset-backups/
+data/*.db-wal
+data/*.db-shm
+tests/__pycache__/
+tests/shots/
+requirements-dev.txt
+ocr/ocr_bin
+.git/
+.gitignore

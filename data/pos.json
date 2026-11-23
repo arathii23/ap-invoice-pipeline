@@ -1,0 +1,137 @@
+{
+  "PO-2026-1001": {
+    "vendor": "V001",
+    "desc": "Hydraulic pumps + seal kits",
+    "net": 130000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Hydraulic pump HP-200",
+        10,
+        12000
+      ],
+      [
+        "Seal kit SK-11",
+        5,
+        2000
+      ]
+    ]
+  },
+  "PO-2026-1002": {
+    "vendor": "V002",
+    "desc": "Freight services Oct 2026",
+    "net": 85000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Freight & fuel surcharge Oct 2026",
+        1,
+        85000
+      ]
+    ]
+  },
+  "PO-2026-1003": {
+    "vendor": "V003",
+    "desc": "Inventory app build (2 milestones)",
+    "net": 500000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Milestone 1 + 2 delivery",
+        1,
+        500000
+      ]
+    ]
+  },
+  "PO-2026-1004": {
+    "vendor": "V004",
+    "desc": "Corrugated cartons 2000 units",
+    "net": 90000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Corrugated carton 5-ply",
+        2000,
+        45
+      ]
+    ]
+  },
+  "PO-2026-1005": {
+    "vendor": "V001",
+    "desc": "Maintenance spare parts",
+    "net": 48000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Maintenance spares kit",
+        4,
+        12000
+      ]
+    ]
+  },
+  "PO-2026-1006": {
+    "vendor": "V002",
+    "desc": "Warehousing Nov 2026",
+    "net": 60000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Warehousing - 600 pallets",
+        600,
+        100
+      ]
+    ]
+  },
+  "PO-2026-1007": {
+    "vendor": "V001",
+    "desc": "Hydraulic hoses, valves and gaskets",
+    "net": 69000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Hydraulic hose HH-40",
+        20,
+        1200
+      ],
+      [
+        "Pressure valve PV-7",
+        10,
+        3500
+      ],
+      [
+        "Gasket set GS-3",
+        40,
+        250
+      ]
+    ]
+  },
+  "PO-2026-1008": {
+    "vendor": "V004",
+    "desc": "Corrugated cartons December batch",
+    "net": 36000,
+    "tax": 18,
+    "billed": 0,
+    "status": "open",
+    "lines": [
+      [
+        "Corrugated carton 5-ply",
+        800,
+        45
+      ]
+    ]
+  }
+}

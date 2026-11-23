@@ -1,0 +1,2 @@
+-r requirements.txt
+playwright   # browser suite only: tests/browser_suite.py (uses system Chrome, or run `playwright install chromium`)

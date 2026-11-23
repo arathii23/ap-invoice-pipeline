@@ -1,0 +1,34 @@
+{
+  "V001": {
+    "name": "Acme Industrial Supplies Pvt Ltd",
+    "gstin": "07AABCA1234F1Z5",
+    "bank": "50200012345678",
+    "ifsc": "HDFC0001234",
+    "approved": true,
+    "addr": "21 Okhla Phase II, New Delhi 110020"
+  },
+  "V002": {
+    "name": "Brightline Logistics LLP",
+    "gstin": "27AAFFB5678K1Z2",
+    "bank": "60110045678901",
+    "ifsc": "ICIC0004567",
+    "approved": true,
+    "addr": "Unit 5, Andheri East, Mumbai 400069"
+  },
+  "V003": {
+    "name": "NovaTech Software Services",
+    "gstin": "29AAECN9012M1Z8",
+    "bank": "91702003456789",
+    "ifsc": "UTIB0002345",
+    "approved": true,
+    "addr": "3rd Floor, Koramangala, Bengaluru 560034"
+  },
+  "V004": {
+    "name": "Greenfield Packaging Co",
+    "gstin": "09AAGCG3456P1Z1",
+    "bank": "33120078901234",
+    "ifsc": "SBIN0006789",
+    "approved": true,
+    "addr": "Kharkhoda Industrial Area, Sonipat 131402"
+  }
+}

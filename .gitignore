@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+data/runs.db
+data/runs.db-*
+data/uploads/
+data/workspaces/
+data/reset-backups/
+tests/shots/
+ocr/ocr_bin

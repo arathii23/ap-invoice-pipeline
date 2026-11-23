@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Invoice Review · AP Pipeline</title>
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%234338ca%27/%3E%3Cpath d=%27M10 16.5l4 4 8-9%27 stroke=%27white%27 stroke-width=%273%27 fill=%27none%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f7f7f8;--surface:#fff;--sunken:#f1f1f3;--ink:#16181d;--ink2:#4a4f5a;--mut:#6b717e;--line:#e5e6ea;--line2:#d4d6dc;
+  --acc:#4338ca;--acc-h:#3730a3;--accb:#eceafc;
+  --ok:#0f7a55;--okb:#e2f5ec;--warn:#9a5400;--warnb:#fdf0d9;--bad:#bf2530;--badb:#fce8e9;
+  --r:10px;--sh:0 1px 2px rgba(16,18,24,.05),0 1px 1px rgba(16,18,24,.03);
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0e1014;--surface:#15181e;--sunken:#1a1e26;--ink:#eceef2;--ink2:#b4bac6;--mut:#8d94a2;--line:#252a33;--line2:#323946;
+  --acc:#8b87ff;--acc-h:#a29fff;--accb:#1f1f45;--ok:#3ccf99;--okb:#10302a;--warn:#f2a94e;--warnb:#33270f;--bad:#ff7d84;--badb:#3a1619;--sh:none}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+svg.i{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+.shell{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);background:var(--surface);padding:18px 12px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:18px}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px;font-weight:650;letter-spacing:-.01em}
+.logo{width:26px;height:26px;border-radius:7px;background:var(--acc);display:grid;place-items:center;color:#fff}
+.brand small{display:block;font-weight:450;color:var(--mut);font-size:11.5px;letter-spacing:0}
+nav.side{display:flex;flex-direction:column;gap:2px}
+nav.side a{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;color:var(--ink2);font-weight:550}
+nav.side a:hover{background:var(--sunken)}nav.side a[aria-current=page]{background:var(--accb);color:var(--acc)}
+nav.side .count{margin-left:auto;font-size:11.5px;color:var(--mut)}
+.sidefoot{margin-top:auto;font-size:12px;color:var(--mut);padding:0 8px}
+.dotlive{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:6px}.dotlive.off{background:var(--bad)}
+main{padding:28px clamp(16px,3vw,40px) 60px;max-width:1280px;width:100%}
+.page-h{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.page-h h1{margin:0;font-size:22px;letter-spacing:-.02em;font-weight:650}.page-h p{margin:2px 0 0;color:var(--mut);max-width:62ch}
+.crumb{display:inline-flex;gap:6px;align-items:center;color:var(--mut);font-weight:550;margin-bottom:8px}.crumb:hover{color:var(--ink)}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden}
+.card>.ch{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.card>.ch h2{margin:0;font-size:14px;letter-spacing:-.005em;color:var(--ink);font-weight:650}
+.card>.cb{padding:16px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:8px;border:1px solid var(--line2);background:var(--surface);font-weight:600;cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--sunken)}.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}.btn.pri:hover:not(:disabled){background:var(--acc-h)}
+.btn.lg{height:42px;padding:0 20px;font-size:15px}.btn.ghost{border-color:transparent;background:none;color:var(--ink2)}.btn.ghost:hover{background:var(--sunken)}
+.btn.danger:hover{color:var(--bad)}
+.badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px;border-radius:99px;font-size:11.5px;font-weight:650;letter-spacing:.01em;white-space:nowrap}
+.badge:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.b-ok{background:var(--okb);color:var(--ok)}.b-warn{background:var(--warnb);color:var(--warn)}.b-bad{background:var(--badb);color:var(--bad)}.b-mut{background:var(--sunken);color:var(--mut)}.b-acc{background:var(--accb);color:var(--acc)}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid color-mix(in srgb,currentColor 25%,transparent);border-top-color:currentColor;animation:sp .7s linear infinite;flex:none;display:inline-block}
+@keyframes sp{to{transform:rotate(360deg)}}
+@keyframes in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@keyframes pulse{50%{opacity:.45}}
+.skel{background:var(--sunken);border-radius:6px;animation:pulse 1.2s ease-in-out infinite}
+.empty{padding:44px 16px;text-align:center;color:var(--mut)}.empty b{display:block;color:var(--ink);font-size:15px;margin-bottom:4px}
+.alert{display:flex;gap:10px;align-items:flex-start;border-radius:8px;padding:10px 12px;margin-top:12px;font-weight:500}
+.alert.bad{background:var(--badb);color:var(--bad)}.alert .btn{margin-left:auto;height:30px}
+
+.up-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:20px;align-items:start}
+.drop{border:1.5px dashed var(--line2);border-radius:12px;padding:34px 20px;text-align:center;cursor:pointer;background:var(--sunken);transition:border-color .15s,background .15s}
+.drop:hover,.drop.over{border-color:var(--acc);background:var(--accb)}
+.drop .ic{width:44px;height:44px;border-radius:12px;background:var(--surface);border:1px solid var(--line);display:grid;place-items:center;margin:0 auto 12px;color:var(--acc)}
+.drop b{font-size:15px}.drop p{margin:4px 0 0;color:var(--mut)}
+.picked{display:flex;align-items:center;gap:12px;border:1px solid var(--line2);border-radius:10px;padding:12px;margin-top:14px;background:var(--surface);animation:in .2s ease}
+.picked .fi{width:36px;height:36px;border-radius:8px;background:var(--accb);color:var(--acc);display:grid;place-items:center}
+.picked .meta{min-width:0;flex:1}.picked .meta b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.picked .meta span{color:var(--mut);font-size:12.5px}
+.guide{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;color:var(--mut);font-size:12.5px}.guide span{display:inline-flex;gap:6px;align-items:center}
+.samples{list-style:none;margin:0;padding:0}
+.samples li{border-bottom:1px solid var(--line)}.samples li:last-child{border:0}
+.samples button{all:unset;box-sizing:border-box;width:100%;display:flex;gap:12px;align-items:center;padding:11px 16px;cursor:pointer}
+.samples button:hover{background:var(--sunken)}.samples button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.samples button[aria-pressed=true]{background:var(--accb)}
+.samples .n{width:22px;color:var(--mut);font-size:12px}.samples .t{flex:1;min-width:0}.samples .t b{display:block;font-weight:600}.samples .t span{color:var(--mut);font-size:12.5px}
+.radio{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line2);flex:none}[aria-pressed=true] .radio{border:5px solid var(--acc)}
+.recent a{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}.recent a:last-child{border:0}.recent a:hover{background:var(--sunken)}
+
+.run-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:20px;align-items:start}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.prog{height:3px;background:var(--line);overflow:hidden}.prog i{display:block;height:100%;background:var(--acc);transition:width .4s ease}
+.prog.ok i{background:var(--ok)}.prog.warn i{background:var(--warn)}.prog.bad i{background:var(--bad)}
+.decision{border-radius:var(--r);border:1px solid;overflow:hidden}
+.decision .in{padding:18px}.decision.ok{background:var(--okb);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}.decision.warn{background:var(--warnb);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}.decision.bad{background:var(--badb);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+.decision.run{background:var(--surface);border-color:var(--line)}
+.decision .lab{display:flex;align-items:center;gap:12px;font-weight:700;font-size:15px}
+.decision.ok .lab{color:var(--ok)}.decision.warn .lab{color:var(--warn)}.decision.bad .lab{color:var(--bad)}
+.decision h2{margin:8px 0 6px;font-size:19px;letter-spacing:-.015em;line-height:1.3}
+.decision .why{margin:0;color:var(--ink2)}
+.decision .next{margin-top:14px;padding-top:12px;border-top:1px solid color-mix(in srgb,currentColor 18%,transparent);display:flex;gap:10px;align-items:flex-start}
+.decision .next b{font-size:12.5px;color:var(--mut);display:block;margin-bottom:2px;font-weight:600}
+.reasons{margin:10px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.reasons li{display:flex;gap:8px;color:var(--ink2)}.reasons li svg{margin-top:3px}
+.tl{list-style:none;margin:0;padding:0}
+.st{position:relative}
+.st>button{all:unset;box-sizing:border-box;width:100%;display:flex;gap:12px;padding:12px 16px;cursor:pointer;align-items:flex-start}
+.st>button:hover{background:var(--sunken)}.st>button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.st.new{animation:in .28s cubic-bezier(.2,.7,.2,1)}
+.dot{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;flex:none;margin-top:1px}
+.dot svg{width:13px;height:13px;stroke-width:2.4}
+.s-pass .dot{background:var(--okb);color:var(--ok)}.s-warn .dot,.s-fail_hold .dot,.s-unverified .dot{background:var(--warnb);color:var(--warn)}.s-fail_reject .dot,.s-error .dot{background:var(--badb);color:var(--bad)}.s-info .dot{background:var(--sunken);color:var(--mut)}
+.s-pending .dot{border:1.5px dashed var(--line2);color:var(--mut);font-size:11px;font-weight:600}.s-pending .ttl{color:var(--mut);font-weight:500}
+.s-running .dot{background:var(--accb);color:var(--acc)}.s-running .ttl{color:var(--acc)}
+.st .body{flex:1;min-width:0}.st .row1{display:flex;gap:8px;align-items:center;justify-content:space-between}.ttl{font-weight:600}
+.st .sum{color:var(--ink2);margin:2px 0 0;font-size:13px;display:block;overflow-wrap:anywhere}
+.st .ms{color:var(--mut);font-size:12px}.chev{transition:transform .15s;color:var(--mut);display:inline-flex}.st.open .chev{transform:rotate(90deg)}
+.det{display:none;padding:0 16px 14px 52px}.st.open .det{display:block}
+table.cmp{width:100%;min-width:420px;border-collapse:collapse;font-size:12.5px}table.cmp td.v{white-space:nowrap}
+.cmpwrap{border:1px solid var(--line);border-radius:8px;overflow:auto}
+table.cmp th{background:var(--sunken);text-align:left;font-weight:600;color:var(--mut);padding:6px 10px}
+table.cmp td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+table.cmp td.v{font-variant-numeric:tabular-nums}.res{white-space:nowrap;font-weight:600}.res.ok{color:var(--ok)}.res.bad{color:var(--bad)}.res.w{color:var(--warn)}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:8px 12px;margin:0}.kv dt{color:var(--mut)}.kv dd{margin:0;overflow-wrap:anywhere}
+.kv dd.flag{color:var(--bad);font-weight:600}.kv dd.fw{color:var(--warn);font-weight:600}
+.flagtxt{font-size:11px;font-weight:700;margin-left:6px;letter-spacing:.02em}
+table.t{width:100%;border-collapse:collapse}
+table.t th{text-align:left;font-size:12.5px;color:var(--mut);font-weight:600;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface)}
+table.t td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.t tbody tr:last-child td{border:0}table.t tbody tr.r{cursor:pointer}table.t tbody tr.r:hover{background:var(--sunken)}
+.r a.lnk{font-weight:600}.r a.lnk:hover{color:var(--acc)}.sub{color:var(--mut);font-size:12.5px}.amt{text-align:right;white-space:nowrap;font-weight:600}th.amt{text-align:right}
+iframe.pdf{width:100%;height:420px;border:0;background:#fff;display:block}
+details.raw summary{cursor:pointer;color:var(--mut);font-weight:600;padding:2px 0}pre{white-space:pre-wrap;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--sunken);border-radius:8px;padding:10px;max-height:220px;overflow:auto;margin:8px 0 0}
+.bar{height:6px;background:var(--sunken);border-radius:4px;overflow:hidden;display:flex}.bar i{display:block;height:100%;background:var(--mut)}.bar i.new{background:var(--acc)}
+
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.kpi{padding:14px 16px}.kpi span{color:var(--mut);font-size:12.5px;font-weight:550}.kpi b{display:block;font-size:26px;letter-spacing:-.02em;margin:2px 0}.kpi small{color:var(--mut)}
+.kpi.ok b{color:var(--ok)}.kpi.warn b{color:var(--warn)}.kpi.bad b{color:var(--bad)}
+.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+.search{position:relative;flex:1;min-width:200px}.search svg{position:absolute;left:11px;top:10px;color:var(--mut)}
+.search input{width:100%;height:36px;border:1px solid var(--line2);border-radius:8px;background:var(--surface);padding:0 12px 0 34px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}.seg button{all:unset;box-sizing:border-box;padding:0 12px;height:34px;display:flex;align-items:center;cursor:pointer;font-weight:600;color:var(--ink2);border-left:1px solid var(--line2)}
+.seg button:first-child{border:0}.seg button[aria-pressed=true]{background:var(--accb);color:var(--acc)}.seg button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.tablewrap{overflow-x:auto}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:600;z-index:50;animation:in .2s ease;max-width:90vw}
+
+
+/* connectors between stages (the sequence is the information) */
+.st:not(:last-child)::before{content:"";position:absolute;left:27px;top:38px;bottom:-12px;width:2px;border-radius:2px;background:var(--line);z-index:1;pointer-events:none}
+.st.s-pass:not(:last-child)::before,.st.s-warn:not(:last-child)::before,.st.s-fail_hold:not(:last-child)::before,.st.s-unverified:not(:last-child)::before,.st.s-info:not(:last-child)::before{background:var(--line2)}
+.st.s-pending:not(:last-child)::before{background:repeating-linear-gradient(var(--line2) 0 3px,transparent 3px 7px)}
+/* animated beam: data flowing from the last finished stage into the running one */
+.st.flow:not(:last-child)::before{background:linear-gradient(180deg,var(--line2) 0%,var(--acc) 50%,var(--line2) 100%);background-size:100% 220%;animation:flow .9s linear infinite}
+@keyframes flow{from{background-position:0 100%}to{background-position:0 -120%}}
+.s-running .dot{box-shadow:0 0 0 0 color-mix(in srgb,var(--acc) 45%,transparent);animation:ping 1.4s ease-out infinite}
+@keyframes ping{to{box-shadow:0 0 0 9px transparent}}
+/* border beam (Magic UI port) */
+@property --ba{syntax:"<angle>";inherits:false;initial-value:0deg}
+.beam{position:relative}
+.beam::after{content:"";position:absolute;inset:0;border-radius:inherit;padding:1.5px;pointer-events:none;
+  background:conic-gradient(from var(--ba),transparent 0 62%,var(--acc) 82%,transparent 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);animation:ba 2.6s linear infinite}
+@keyframes ba{to{--ba:360deg}}
+/* progress shine */
+.prog.live i{background:linear-gradient(90deg,var(--acc),color-mix(in srgb,var(--acc) 40%,#fff),var(--acc));background-size:200% 100%;animation:shine 1.1s linear infinite}
+@keyframes shine{to{background-position:-200% 0}}
+/* dot pattern behind the drop zone */
+.drop{position:relative;isolation:isolate;background-image:radial-gradient(var(--line2) 1px,transparent 1.2px);background-size:16px 16px}
+.drop::before{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:radial-gradient(ellipse 55% 62% at 50% 50%,var(--sunken) 55%,transparent 100%);transition:opacity .2s}
+.drop.over::before,.drop:hover::before{opacity:.6}
+.drop .ic{transition:transform .25s cubic-bezier(.2,.7,.2,1)}.drop.over .ic{transform:translateY(-4px) scale(1.06)}
+/* shimmer button while a run is starting */
+.btn.pri.busy{position:relative;overflow:hidden}
+.btn.pri.busy::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,rgba(255,255,255,.35) 50%,transparent 70%);transform:translateX(-100%);animation:shim 1.1s ease-in-out infinite}
+@keyframes shim{to{transform:translateX(100%)}}
+/* decision settles: icon draws itself, ring pulses once */
+.dec-ic{position:relative;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;flex:none;background:color-mix(in srgb,currentColor 14%,transparent)}
+.dec-ic::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid currentColor;opacity:0;animation:ring .9s .25s ease-out 1}
+@keyframes ring{from{opacity:.55;transform:scale(1)}to{opacity:0;transform:scale(1.9)}}
+.dec-ic svg{width:18px;height:18px;stroke-width:2.6}
+.dec-ic .draw{stroke-dasharray:30;stroke-dashoffset:30;animation:draw .5s .1s cubic-bezier(.3,.7,.2,1) forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.dec-ic.pop svg{animation:pop .45s .1s cubic-bezier(.3,1.6,.4,1) both}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:none;opacity:1}}
+.decision.settle{animation:settle .5s cubic-bezier(.2,.8,.2,1)}
+@keyframes settle{from{transform:scale(.985);opacity:.6}to{transform:none;opacity:1}}
+.decision .figs{display:flex;gap:28px;flex-wrap:wrap;margin:12px 0 2px}
+.decision .figs div{display:flex;flex-direction:column}.decision .figs small{color:var(--mut);font-size:12.5px;font-weight:550}.decision .figs b{font-size:24px;letter-spacing:-.02em;color:var(--ink);line-height:1.2}
+.decision .figs .v{font-size:15px;font-weight:600;letter-spacing:0;line-height:1.7}
+/* history rows reveal once */
+tbody.stagger tr.r{animation:rowin .4s cubic-bezier(.2,.7,.2,1) both;animation-delay:calc(var(--i,0)*35ms)}
+@keyframes rowin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.meta{display:flex;gap:6px 16px;flex-wrap:wrap;margin:4px 0 0;color:var(--mut)}.meta span+span{padding-left:16px;border-left:1px solid var(--line2)}
+.sidefoot .row{display:flex;align-items:center;margin-bottom:3px}.sidefoot .sm{display:block;font-size:11.5px;margin-left:13px}
+@media(max-width:1000px){.run-grid,.up-grid{grid-template-columns:1fr}.run-grid:not(.live) .decision-col{order:-1}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){
+  .shell{grid-template-columns:1fr}
+  aside{position:static;height:auto;flex-direction:row;align-items:center;padding:10px 12px;border-right:0;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap}
+  .brand small,.sidefoot{display:none}nav.side{flex-direction:row;margin-left:auto}
+  main{padding:18px 16px 50px}.kv{grid-template-columns:105px 1fr}
+  table.t thead{display:none}table.t,table.t tbody,table.t tr,table.t td{display:block;width:100%}
+  table.t tr.r{padding:12px 14px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr auto;grid-template-areas:'inv amt' 'ven dec';gap:4px 12px;align-items:center}
+  table.t td{border:0;padding:0;width:auto}table.t td.c-inv{grid-area:inv;min-width:0;overflow-wrap:anywhere}table.t td.amt{grid-area:amt;text-align:right}table.t td.c-ven{grid-area:ven;min-width:0}table.t td.c-dec{grid-area:dec;justify-self:end}table.t td.hide-m{display:none}
+  .det{padding-left:16px}iframe.pdf{height:320px}.page-h h1{font-size:19px}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.dec-ic .draw{stroke-dashoffset:0}}
+</style></head>
+<body>
+<div class="shell">
+<aside>
+  <a class="brand" href="#/upload" aria-label="Invoice Review home"><span class="logo"><svg class="i" viewBox="0 0 24 24" style="stroke:#fff"><path d="M6 3h9l4 4v14H6z"/><path d="M9 13l2 2 4-4"/></svg></span><span>Invoice Review<small>Accounts payable</small></span></a>
+  <nav class="side" aria-label="Main">
+    <a href="#/upload" id="n-upload"><svg class="i" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>Upload</a>
+    <a href="#/history" id="n-history"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>History<span class="count num" id="n-count"></span></a>
+  </nav>
+  <div class="sidefoot"><div class="row"><span class="dotlive" id="live"></span><span id="livetxt">Connecting…</span></div><span class="sm" id="engtxt"></span></div>
+</aside>
+<main id="app" tabindex="-1"></main>
+</div>
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'—').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const inr=x=>x==null||x===''?'—':'₹'+Number(x).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const I={
+ up:'<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>',file:'<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/>',check:'<path d="M5 12.5l4.5 4.5L19 7"/>',
+ alert:'<path d="M12 8v5M12 17h.01"/><path d="M10.3 3.9L2.5 17.5A2 2 0 004.2 20.5h15.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>',x:'<path d="M6 6l12 12M18 6L6 18"/>',
+ info:'<path d="M12 11v6M12 7.5h.01"/>',chev:'<path d="M9 6l6 6-6 6"/>',search:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',back:'<path d="M15 6l-6 6 6 6"/>',
+ retry:'<path d="M4 12a8 8 0 0114-5.3L20 9M20 4v5h-5M20 12a8 8 0 01-14 5.3L4 15M4 20v-5h5"/>',trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',scan:'<path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3M4 12h16"/>',pdf:'<path d="M6 3h9l4 4v14H6z"/><path d="M9 14h6M9 17h4"/>'};
+const ic=(n,c='')=>`<svg class="i ${c}" viewBox="0 0 24 24" aria-hidden="true">${I[n]}</svg>`;
+
+const SCEN={'01':['Clean PDF','Machine-readable text, explicit PO — the happy path'],'02':['Scanned image','No text layer: OCR, then re-validation of what OCR read'],'03':['Milestone 1 of 2','First half of a split PO — partial billing allowed'],'04':['Milestone 2 of 2','Second half closes the PO'],'05':['Duplicate re-send','Same invoice number sent again as a “reminder”'],'06':['Missing fields','No invoice number or date, no PO reference'],'07':['Price variance','Unit price above the PO beyond tolerance'],'08':['No PO printed','PO has to be inferred from vendor and amount'],'09':['Bank details changed','Account differs from the vendor master'],'10':['Two-page invoice','Line items continue on page 2; totals on the last page'],'11':['Different layout','Other labels, dd/mm/yyyy date, split CGST + SGST, Rs. prefix']};
+const DEC={APPROVE:['Approved','ok','b-ok'],HOLD:['On hold','warn','b-warn'],REJECT:['Rejected','bad','b-bad']};
+const decOf=r=>r.error?['Failed','bad','b-bad']:(DEC[r.decision]||['Pending','run','b-mut']);
+const STL={pass:['Passed','b-ok'],warn:['Passed · note','b-warn'],fail_hold:['Needs review','b-warn'],unverified:['Not verified','b-warn'],fail_reject:['Failed','b-bad'],error:['Error','b-bad'],info:['Skipped','b-mut']};
+const SI={pass:'check',warn:'alert',fail_hold:'alert',unverified:'alert',fail_reject:'x',error:'x',info:'info'};
+const when=ts=>new Date(ts).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+let CFG=null,timer=null,ctl=0;
+
+function toast(m){const t=document.createElement('div');t.className='toast';t.textContent=m;$('#toasts').append(t);setTimeout(()=>t.remove(),3200)}
+async function api(u,o){const r=await fetch(u,o);let j=null;try{j=await r.json()}catch{}if(!r.ok)throw Object.assign(new Error(j?.error||('Request failed ('+r.status+')')),{status:r.status});return j}
+function setNav(p){for(const k of['upload','history'])$('#n-'+k).setAttribute('aria-current',(k===p||(p==='run'&&k==='history'))?'page':'false')}
+async function ping(){try{const r=await api('/api/dashboard');$('#n-count').textContent=r.runs.length||'';$('#live').className='dotlive';$('#livetxt').textContent='Pipeline online'}catch{$('#live').className='dotlive off';$('#livetxt').textContent='Server unreachable'}}
+const errBox=(t,d,btn)=>`<div class="card"><div class="empty"><b>${esc(t)}</b>${esc(d)}<div style="margin-top:14px">${btn||`<button class="btn" onclick="route()">${ic('retry')}Try again</button>`}</div></div></div>`;
+
+async function route(){
+  clearInterval(timer);const my=++ctl;
+  const h=location.hash.replace(/^#\/?/,'')||'upload',[v,arg]=h.split('/');
+  if(!CFG){try{CFG=await api('/api/config')}catch{$('#app').innerHTML=errBox('Cannot reach the pipeline server','Start it with “python3 server.py” and reload this page.');ping();return}}
+  ping();engineNote();
+  if(v==='run'&&arg){setNav('run');return viewRun(arg,my)}
+  if(v==='history'){setNav('history');return viewHistory(my)}
+  setNav('upload');return viewUpload(my);
+}
+function engineNote(){const x=CFG&&CFG.extraction;if(!x)return;$('#engtxt').innerHTML='OCR: '+esc((x.ocr_engines[0]||'none'))+'<br>LLM: '+(x.llm_configured?esc(x.llm_mode)+' · '+esc(x.llm_model):'off (rules only)')}
+/* number ticker (Magic UI port): counts up to the real value, skipped with reduced motion */
+const fmtT={inr:v=>inr(v),int:v=>String(Math.round(v))};
+function tickers(root){root.querySelectorAll('[data-tick]').forEach(el=>{const to=parseFloat(el.dataset.tick),f=fmtT[el.dataset.fmt||'int'];
+  if(!isFinite(to)||matchMedia('(prefers-reduced-motion:reduce)').matches||to===0){el.textContent=f(to||0);return}
+  const t0=performance.now(),d=Math.min(900,350+Math.log10(Math.abs(to)+1)*90);
+  const step=t=>{const k=Math.min(1,(t-t0)/d),e=1-Math.pow(1-k,3);el.textContent=f(to*e);if(k<1)requestAnimationFrame(step);else el.textContent=f(to)};requestAnimationFrame(step)})}
+addEventListener('hashchange',route);
+
+/* ---------- upload ---------- */
+let picked=null,samplesCache=null,submitting=false;
+async function viewUpload(my){
+  $('#app').innerHTML=`<div class="page-h"><div><h1>Process an invoice</h1><p>Upload a vendor invoice. It is read, matched to a purchase order and checked against policy — then approved, held or rejected, with reasons.</p></div></div>
+  <div class="up-grid"><div class="card"><div class="cb">
+   <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose an invoice PDF or drop it here"><div class="ic">${ic('up')}</div><b>Drop an invoice PDF here</b><p>or click to browse your files</p></div>
+   <input id="file" type="file" accept="application/pdf,.pdf" class="sr" tabindex="-1" aria-label="Invoice PDF">
+   <div class="guide"><span>${ic('pdf')}PDF only · up to 10 MB</span><span>${ic('file')}Text PDFs are read directly</span><span>${ic('scan')}Scans go through OCR</span></div>
+   <div id="pickedbox"></div><div id="uperr" role="alert"></div>
+   <div style="margin-top:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><button class="btn pri lg" id="go" disabled>Process invoice</button><span class="sub" id="hint">Choose a file or a sample to begin.</span></div>
+  </div></div>
+  <div class="col"><div class="card"><div class="ch"><h2>Sample invoices</h2><span class="sub" id="scount"></span></div><ul class="samples" id="samples"><li><div class="cb"><div class="skel" style="height:16px;margin-bottom:10px"></div><div class="skel" style="height:16px;margin-bottom:10px"></div><div class="skel" style="height:16px"></div></div></li></ul></div>
+  <div class="card recent"><div class="ch"><h2>Recent runs</h2><a class="sub" href="#/history">View all</a></div><div id="recent"><div class="cb"><div class="skel" style="height:16px"></div></div></div></div></div></div>`;
+  const drop=$('#drop'),file=$('#file');
+  drop.onclick=()=>file.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();file.click()}};
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add('over','beam')};drop.ondragleave=()=>drop.classList.remove('over','beam');
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over','beam');choose(e.dataTransfer.files[0])};
+  file.onchange=e=>{choose(e.target.files[0]);file.value=''};
+  $('#go').onclick=submit;renderPicked();
+  try{if(!samplesCache)samplesCache=await api('/api/samples');if(my!==ctl)return;
+    $('#scount').textContent=samplesCache.length+' scenarios';
+    $('#samples').innerHTML=samplesCache.map(f=>{const k=f.slice(0,2),s=SCEN[k]||[f,''];return `<li><button data-f="${esc(f)}" aria-pressed="${picked?.sample===f}"><span class="n num">${k}</span><span class="t"><b>${esc(s[0])}</b><span>${esc(s[1])}</span></span><span class="radio"></span></button></li>`}).join('');
+    document.querySelectorAll('.samples button').forEach(b=>b.onclick=()=>{picked={sample:b.dataset.f};$('#uperr').innerHTML='';document.querySelectorAll('.samples button').forEach(x=>x.setAttribute('aria-pressed',x===b));renderPicked()});
+  }catch(e){if(my===ctl)$('#samples').innerHTML=`<li><div class="empty">Could not load samples. ${esc(e.message)}</div></li>`}
+  try{const d=await api('/api/dashboard');if(my!==ctl)return;
+    $('#recent').innerHTML=d.runs.length?d.runs.slice(0,4).map(r=>{const[l,,c]=decOf(r);return `<a href="#/run/${r.id}"><span class="badge ${c}">${l}</span><span style="flex:1;min-width:0"><b style="font-weight:600">${esc(r.extracted.invoice_no||r.filename)}</b><span class="sub" style="display:block">${esc(r.extracted.vendor||'')}</span></span><span class="num sub">${inr(r.extracted.total)}</span></a>`}).join(''):'<div class="empty"><b>No runs yet</b>Process an invoice and it will appear here.</div>'
+  }catch{if(my===ctl)$('#recent').innerHTML='<div class="empty">Could not load recent runs.</div>'}
+}
+function choose(f){
+  const err=$('#uperr');err.innerHTML='';if(!f)return;
+  const bad=m=>{err.innerHTML=`<div class="alert bad">${ic('alert')}<span>${esc(m)}</span></div>`;picked=null;renderPicked()};
+  if(!/\.pdf$/i.test(f.name)&&f.type!=='application/pdf')return bad(`“${f.name}” is not a PDF. Upload the invoice as a .pdf file.`);
+  if(f.size===0)return bad('That file is empty.');
+  if(f.size>10*1024*1024)return bad(`That PDF is ${(f.size/1048576).toFixed(1)} MB — the limit is 10 MB.`);
+  document.querySelectorAll('.samples button').forEach(x=>x.setAttribute('aria-pressed','false'));
+  picked={file:f};renderPicked();
+}
+function renderPicked(){
+  const b=$('#pickedbox'),go=$('#go'),hint=$('#hint');if(!b)return;
+  if(!picked){b.innerHTML='';go.disabled=true;hint.textContent='Choose a file or a sample to begin.';return}
+  const name=picked.file?picked.file.name:picked.sample,meta=picked.file?`${Math.max(1,Math.round(picked.file.size/1024))} KB · from your computer`:((SCEN[picked.sample.slice(0,2)]||[])[0]||'')+' · sample invoice';
+  b.innerHTML=`<div class="picked"><div class="fi">${ic('pdf')}</div><div class="meta"><b>${esc(name)}</b><span>${esc(meta)}</span></div><button class="btn ghost" id="clr" aria-label="Remove selected file">${ic('x')}</button></div>`;
+  $('#clr').onclick=()=>{picked=null;document.querySelectorAll('.samples button').forEach(x=>x.setAttribute('aria-pressed','false'));renderPicked()};
+  go.disabled=submitting;hint.textContent='Ready — this creates a new run.';
+}
+async function submit(){
+  if(!picked||submitting)return;submitting=true;const go=$('#go');go.disabled=true;go.classList.add('busy');go.innerHTML='<span class="spin"></span>Starting…';$('#uperr').innerHTML='';
+  try{
+    const r=picked.file?await api('/api/upload',{method:'POST',body:await picked.file.arrayBuffer(),headers:{'X-Filename':encodeURIComponent(picked.file.name)}})
+                       :await api('/api/process_sample',{method:'POST',body:JSON.stringify({name:picked.sample})});
+    picked=null;location.hash='#/run/'+r.id;
+  }catch(e){const el=$('#uperr');if(el){el.innerHTML=`<div class="alert bad">${ic('alert')}<span>${esc(e.message)}</span><button class="btn" id="rt">Try again</button></div>`;const b=$('#rt');if(b)b.onclick=submit}}
+  finally{submitting=false;const g=$('#go');if(g&&g.isConnected){g.classList.remove('busy');g.disabled=!picked;g.textContent='Process invoice'}}
+}
+
+/* ---------- run ---------- */
+const openSt=new Set(),closedSt=new Set(),seenSt=new Set();
+async function viewRun(id,my){
+  openSt.clear();closedSt.clear();seenSt.clear();
+  $('#app').innerHTML=`<a class="crumb" href="#/history">${ic('back')}History</a><div class="skel" style="height:28px;width:280px;margin-bottom:20px"></div><div class="run-grid"><div class="card"><div class="cb"><div class="skel" style="height:16px;margin-bottom:12px"></div><div class="skel" style="height:16px;margin-bottom:12px"></div><div class="skel" style="height:16px"></div></div></div><div class="card"><div class="cb"><div class="skel" style="height:90px"></div></div></div></div>`;
+  let fails=0;
+  const tick=async()=>{
+    try{const r=await api('/api/run/'+id);if(my!==ctl)return;fails=0;paintRun(r);if(r.status==='done'){clearInterval(timer);ping()}}
+    catch(e){if(my!==ctl)return;
+      if(e.status===404){clearInterval(timer);$('#app').innerHTML=errBox('Run not found','This run does not exist — it may have been cleared from history.','<a class="btn" href="#/history">Back to history</a>');return}
+      if(++fails>=3){clearInterval(timer);$('#app').innerHTML=errBox('Lost contact with the pipeline',e.message,`<button class="btn pri" onclick="route()">${ic('retry')}Reconnect</button>`)}}
+  };
+  await tick();if(my===ctl)timer=setInterval(tick,250);
+}
+function scaffold(r){
+  const app=$('#app');
+  if(app.querySelector('#runroot')?.dataset.id===r.id)return;
+  app.innerHTML=`<div id="runroot" data-id="${esc(r.id)}"><a class="crumb" href="#/history">${ic('back')}History</a><div id="hdr"></div>
+  <div class="run-grid"><div class="col"><div class="card" id="tlcard"></div>
+   <div class="card" id="doccard"></div></div>
+   <div class="col decision-col" id="side"></div></div></div>`;
+}
+function paintDoc(r){
+  const el=$('#doccard');if(!el)return;const d=r.document||{available:true,url:`/api/run/${r.id}/document`},key=d.available?d.url:'x:'+(d.reason||'');
+  if(el.dataset.k===key)return;el.dataset.k=key;
+  el.innerHTML=d.available?`<div class="ch"><h2>Document</h2><a class="sub" href="${esc(d.url)}" target="_blank" rel="noopener">Open PDF</a></div><iframe class="pdf" title="Invoice PDF" src="${esc(d.url)}#toolbar=0&navpanes=0&view=FitH"></iframe>`
+    :`<div class="ch"><h2>Document</h2></div><div class="empty" style="padding:28px 20px"><b>Original document not available</b>${esc(d.reason||'The stored file could not be found.')}<div class="sub" style="margin-top:8px">The extracted data and the decision below are still the record of this run.</div></div>`;
+}
+function paintRun(r){
+  scaffold(r);paintDoc(r);
+  document.querySelector('.run-grid').classList.toggle('live',r.status!=='done');
+  const stages=CFG.stages,by={};r.stages.forEach(s=>by[s.key]=s);
+  const[dl,dk,dc]=decOf(r),done=r.status==='done',e=r.extracted||{};
+  const doneN=stages.filter(a=>by[a[0]]).length,pct=done?100:Math.round(doneN/stages.length*100);
+  const st={};r.stages.forEach(s=>st[s.key]=s.status);
+  const F=ks=>{const v=ks.map(k=>st[k]);return v.some(x=>x==='fail_hold'||x==='unverified'||x==='fail_reject'||x==='error')?'flag':v.includes('warn')?'fw':''};
+
+  $('#hdr').innerHTML=`<div class="page-h"><div><h1>${esc(e.invoice_no||r.filename)} <span class="badge ${dc}" style="vertical-align:middle;margin-left:6px">${done?dl:'Running'}</span></h1><div class="meta">${e.vendor?`<span>${esc(e.vendor)}</span>`:''}<span>${esc(r.filename)}</span><span>${when(r.ts)}</span>${r.retry_of?'<span>Retry</span>':''}</div></div><a class="btn" href="#/upload">${ic('up')}New invoice</a></div>`;
+
+  let tl='';
+  const runningK=!done?(stages.find(x=>!by[x[0]])||[])[0]:null,lastDoneK=runningK?[...stages].reverse().find(x=>by[x[0]])?.[0]:null;
+  stages.forEach(([k,label],ix)=>{
+    const s=by[k];let cls,icon,sum='',det='',ms='',res='';
+    if(s){cls='s-'+s.status;icon=ic(SI[s.status]||'check');sum=s.detail;ms=s.ms>=50?s.ms+' ms':'';res=k==='decide'?`<span class="badge ${dc}">${dl}</span>`:`<span class="badge ${STL[s.status][1]}">${STL[s.status][0]}</span>`;
+      if(k==='extract'&&by.extract_note)sum=by.extract_note.detail+' '+sum;
+      const cmp=s.extra?.compare;
+      if(cmp?.length)det=`<div class="cmpwrap"><table class="cmp"><thead><tr><th>Check</th><th>On invoice</th><th>Reference</th><th>Result</th></tr></thead><tbody>${cmp.map(c=>`<tr><td>${esc(c.label)}</td><td class="v">${esc(c.invoice)}</td><td class="v">${esc(c.reference)}</td><td class="res ${c.ok===true?'ok':c.ok===false?'bad':'w'}">${c.ok===true?'✓ Match':c.ok===false?'✕ Mismatch':s.status==='unverified'?'– Not verified':'! Check'}</td></tr>`).join('')}</tbody></table></div>`;
+      if(s.extra?.inferred)det+=`<p class="sub" style="margin:8px 0 0">The PO was inferred, not printed on the invoice — flagged for audit.</p>`;
+    }else if(!done&&k===(stages.find(x=>!by[x[0]])||[])[0]){cls='s-running';icon='<span class="spin"></span>';sum='In progress…';res='<span class="badge b-acc">Running</span>'}
+    else{cls='s-pending';icon=ix+1;res=`<span class="badge b-mut">${done?'Not reached':'Pending'}</span>`}
+    if(s&&!seenSt.has(k)&&['fail_hold','unverified','fail_reject','error'].includes(s.status)&&!closedSt.has(k))openSt.add(k);
+    const isNew=s&&!seenSt.has(k);if(s)seenSt.add(k);
+    const pend=!s,open=openSt.has(k);
+    tl+=`<li class="st ${cls} ${open?'open':''} ${isNew?'new':''} ${k===lastDoneK?'flow':''}" data-k="${k}"><button aria-expanded="${open}" ${pend?'disabled style="cursor:default"':''}><span class="dot">${icon}</span><span class="body"><span class="row1"><span class="ttl">${esc(label)}</span><span style="display:flex;gap:10px;align-items:center"><span class="ms num">${ms}</span>${res}${pend?'':`<span class="chev">${ic('chev')}</span>`}</span></span><span class="sum">${esc(sum)}</span></span></button>${det?`<div class="det">${det}</div>`:''}</li>`;
+  });
+  $('#tlcard').innerHTML=`<div class="prog ${done?dk:'live'}"><i style="width:${pct}%"></i></div><div class="ch"><h2>Processing timeline</h2><span class="sub num">${doneN}/${stages.length} stages${done?'':' · live'}</span></div><ul class="tl">${tl}</ul>`;
+  $('#tlcard').querySelectorAll('.st>button').forEach(b=>b.onclick=()=>{const li=b.parentElement,k=li.dataset.k;if(openSt.has(k)){openSt.delete(k);closedSt.add(k)}else{openSt.add(k);closedSt.delete(k)}li.classList.toggle('open');b.setAttribute('aria-expanded',openSt.has(k))});
+
+  const failedSt=r.stages.filter(s=>['fail_hold','unverified','fail_reject'].includes(s.status));
+  let dec;
+  const DI={ok:'<path class="draw" d="M5 12.5l4.5 4.5L19 7"/>',bad:'<path class="draw" d="M6 6l12 12M18 6L6 18"/>',warn:I.alert};
+  const figs=`<div class="figs"><div><small>Invoice total</small><b class="num" data-tick="${e.total??''}" data-fmt="inr">${inr(e.total)}</b></div>${e.vendor?`<div><small>Vendor</small><span class="v">${esc(e.vendor)}</span></div>`:''}</div>`;
+  if(!done)dec=`<div class="decision run beam"><div class="in"><div class="lab" style="color:var(--acc)"><span class="spin"></span>Processing</div><h2>Reviewing ${esc(r.filename)}</h2><p class="why">${doneN} of ${stages.length} stages complete. The decision appears once every check has run.</p></div></div>`;
+  else dec=`<div class="decision settle ${dk}" id="decision"><div class="in"><div class="lab"><span class="dec-ic ${dk==='ok'?'':'pop'}"><svg viewBox="0 0 24 24" class="i" aria-hidden="true">${DI[dk]||DI.warn}</svg></span>${dl}</div>${e.total!=null?figs:''}<h2>${esc(r.headline)}</h2>
+    ${r.error?`<p class="why">${esc(r.reasoning)}</p>`:failedSt.length?`<ul class="reasons">${failedSt.map(s=>`<li>${ic(s.status==='fail_reject'?'x':'alert')}<span><b>${esc(s.title)}:</b> ${esc(s.detail)}</span></li>`).join('')}</ul>`:`<p class="why">${esc(r.reasoning)}</p>`}
+    <div class="next"><div style="flex:1"><b>Recommended next step</b>${esc(r.action)}</div>${r.error?`<button class="btn pri" id="retry">${ic('retry')}Retry run</button>`:''}</div>${(r.notes||[]).map(n=>`<p class="sub" style="margin:10px 0 0">${esc(n)}</p>`).join('')}</div></div>`;
+
+  const rel=r.related,runLink=x=>`<a class="lnk" href="#/run/${esc(x.id)}">${esc(x.invoice_no||x.filename)}</a> <span class="sub">· ${esc(x.filename)} · ${esc((DEC[x.decision]||[x.decision])[0])} · ${when(x.ts)}</span>`;
+  const RELT={duplicate_of_approved:'Already approved earlier',unchanged_resubmission:'Resubmitted without changes',corrected_resubmission:'Corrected resubmission of a held invoice'};
+  const RELD={duplicate_of_approved:'The same invoice was approved before, so this copy is not processed again.',unchanged_resubmission:'Nothing differs from the earlier held submission, so it stays on hold. Nothing was approved twice.',corrected_resubmission:'This submission differs from the earlier held one and was checked again in full. The earlier run is kept as the audit trail.'};
+  const relHtml=done&&(rel&&rel.relation||r.superseded_by)?`<div class="card" id="related"><div class="ch"><h2>Related submissions</h2></div><div class="cb">
+    ${rel&&rel.relation?`<p style="margin:0 0 8px"><b>${RELT[rel.relation]||esc(rel.relation)}</b></p><p class="sub" style="margin:0 0 10px">${RELD[rel.relation]||''}</p><ul class="reasons">${(rel.of||[]).map(x=>`<li>${ic('file')}<span>${runLink(x)}</span></li>`).join('')}</ul>
+      ${rel.changes?.length?`<div class="cmpwrap" style="margin-top:12px"><table class="cmp"><thead><tr><th>Changed field</th><th>Earlier (held)</th><th>This submission</th></tr></thead><tbody>${rel.changes.map(c=>`<tr><td>${esc(c.field)}</td><td class="v">${esc(c.before??'—')}</td><td class="v">${esc(c.after??'—')}</td></tr>`).join('')}</tbody></table></div>`:''}`:''}
+    ${r.superseded_by?`<p style="margin:${rel&&rel.relation?'12px':'0'} 0 0"><b>Superseded.</b> <span class="sub">A later submission, <a class="lnk" href="#/run/${esc(r.superseded_by)}">run ${esc(r.superseded_by)}</a>, corrects or repeats this held invoice. This run is kept unchanged for the audit trail.</span></p>`:''}
+  </div></div>`:'';
+  const fl=(k,t)=>k==='flag'?`<span class="flagtxt">${t}</span>`:k==='fw'?`<span class="flagtxt">Check</span>`:'';
+  const fields=e.vendor?`<dl class="kv">
+    <dt>Vendor</dt><dd class="${F(['vendor'])}">${esc(e.vendor)}${fl(F(['vendor']),'Issue')}</dd><dt>GSTIN</dt><dd class="${F(['vendor'])}">${esc(e.gstin)}</dd>
+    <dt>Invoice no.</dt><dd class="${F(['duplicate','fields'])}">${esc(e.invoice_no)}${e.invoice_no?'':'<span class="flagtxt">Missing</span>'}${st.duplicate==='fail_reject'?'<span class="flagtxt">Duplicate</span>':''}</dd>
+    <dt>Invoice date</dt><dd class="${F(['fields'])}">${esc(e.invoice_date)}${e.invoice_date?'':'<span class="flagtxt">Missing</span>'}</dd>
+    <dt>PO reference</dt><dd class="${F(['po'])}">${esc(e.po_ref||'Not printed')}${!e.po_ref&&r.po?' → inferred '+esc(r.po):''}</dd>
+    <dt>Net amount</dt><dd class="num ${F(['amount','math'])}">${inr(e.subtotal)}${e.subtotal==null?'<span class="flagtxt">Not found</span>':''}</dd><dt>${esc(e.tax_type||'Tax')} ${e.tax_rate??''}%</dt><dd class="num">${inr(e.tax)}${e.tax==null?'<span class="flagtxt" style="color:var(--warn)">Not found</span>':''}</dd>
+    <dt>Total due</dt><dd class="num ${F(['math'])}"><b>${inr(e.total)}</b>${e.total==null?'<span class="flagtxt">Not found</span>':''}</dd>
+    <dt>Bank account</dt><dd class="num ${F(['bank'])}">${esc(e.bank)} · ${esc(e.ifsc)}${fl(F(['bank']),'Differs from master')}</dd></dl>
+    ${e.lines?.length?`<div class="cmpwrap" style="margin-top:14px"><table class="cmp"><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Amount</th></tr></thead><tbody>${e.lines.map(l=>`<tr><td>${esc(l.desc)}</td><td class="v">${l.qty??'—'}</td><td class="v">${inr(l.unit)}</td><td class="v">${inr(l.amount)}</td></tr>`).join('')}</tbody></table></div>`:''}
+    <details class="raw" style="margin-top:12px"><summary>Raw ${r.ocr?'OCR':'extracted'} text</summary><pre>${esc(r.raw_text)}</pre></details>`
+    :`<div class="empty" style="padding:24px"><b>${done?'Nothing could be extracted':'Reading the document…'}</b>${done?'The pipeline stopped before any fields were read.':''}</div>`;
+  const po=r.po_info,vi=r.vendor_info,appr=r.decision==='APPROVE'&&!r.error,thisNet=appr?(e.subtotal||0):0;
+  const left=po?po.remaining-thisNet:0,openTxt=po?inr(Math.max(0,left))+(appr?(left<=0?' <span class="sub">(PO fully billed)</span>':''):(po.remaining<=0?' <span class="sub">(nothing left on this PO — not approved)</span>':' <span class="sub">(unchanged — not approved)</span>')):'';
+  const poHtml=po?`<dl class="kv"><dt>PO number</dt><dd><b>${esc(po.id)}</b>${po.inferred?'<span class="flagtxt" style="color:var(--warn)">Inferred</span>':''}</dd><dt>Description</dt><dd>${esc(po.desc)}</dd><dt>PO value (net)</dt><dd class="num">${inr(po.net)}</dd>
+    <dt>Billed before</dt><dd class="num">${inr(po.billed)}</dd><dt>This invoice (net)</dt><dd class="num">${inr(e.subtotal)}</dd><dt>Open after</dt><dd class="num">${openTxt}</dd></dl>
+    <div class="bar" style="margin-top:12px" role="img" aria-label="PO consumption"><i style="width:${Math.min(100,po.billed/po.net*100)}%"></i><i class="new" style="width:${Math.max(0,Math.min(100-po.billed/po.net*100,thisNet/po.net*100))}%"></i></div><div class="sub" style="margin-top:4px">${((po.billed+thisNet)/po.net*100).toFixed(0)}% of PO billed after this run</div>
+    <div class="cmpwrap" style="margin-top:12px"><table class="cmp"><thead><tr><th>PO line</th><th>Qty</th><th>Unit</th></tr></thead><tbody>${po.lines.map(l=>`<tr><td>${esc(l[0])}</td><td class="v">${l[1]}</td><td class="v">${inr(l[2])}</td></tr>`).join('')}</tbody></table></div>`
+    :`<div class="empty" style="padding:24px"><b>${done?'No purchase order matched':'Matching…'}</b>${done?'The invoice could not be tied to an open PO, so amounts were not compared.':''}</div>`;
+  $('#side').innerHTML=`${dec}${relHtml}<div class="card"><div class="ch"><h2>Extracted invoice</h2><span style="display:flex;gap:6px">${r.ocr?`<span class="badge b-warn">OCR · ${esc(r.extraction?.engine)}</span>`:done&&e.vendor?'<span class="badge b-mut">Text layer</span>':''}${r.extraction?.llm?.used?'<span class="badge b-acc">LLM-assisted</span>':''}${r.extraction&&r.extraction.pages>1?`<span class="badge b-mut">${r.extraction.pages} pages</span>`:''}</span></div><div class="cb">${fields}</div></div>
+    <div class="card"><div class="ch"><h2>Matched purchase order</h2>${vi?`<span class="sub">${esc(vi.name)}</span>`:''}</div><div class="cb">${poHtml}</div></div>`;
+  if(done&&!paintRun._ticked?.has(r.id)){(paintRun._ticked=paintRun._ticked||new Set()).add(r.id);tickers($('#side'))}else if(done){$('#side').querySelectorAll('[data-tick]').forEach(el=>el.textContent=fmtT[el.dataset.fmt||'int'](parseFloat(el.dataset.tick)||0))}
+  const rt=$('#retry');if(rt)rt.onclick=async()=>{rt.disabled=true;rt.innerHTML='<span class="spin"></span>Retrying…';try{const n=await api('/api/retry/'+r.id,{method:'POST'});location.hash='#/run/'+n.id}catch(err){toast(err.message);rt.disabled=false;rt.innerHTML=ic('retry')+'Retry run'}};
+}
+
+/* ---------- history ---------- */
+let HF={q:'',s:'ALL'};
+async function viewHistory(my){
+  const head=`<div class="page-h"><div><h1>History</h1><p>Every run is saved. Open one to see exactly what was checked and why.</p></div><div style="display:flex;gap:8px">${CFG&&CFG.reset_enabled?`<button class="btn ghost danger" id="clear">${ic('trash')}Clear history</button>`:''}<a class="btn pri" href="#/upload">${ic('up')}Process invoice</a></div></div>`;
+  $('#app').innerHTML=head+`<div class="kpis">${'<div class="card kpi"><div class="skel" style="height:56px"></div></div>'.repeat(4)}</div><div class="card"><div class="cb"><div class="skel" style="height:16px;margin-bottom:14px"></div><div class="skel" style="height:16px;margin-bottom:14px"></div><div class="skel" style="height:16px"></div></div></div>`;
+  let d;try{d=await api('/api/dashboard')}catch(e){if(my===ctl)$('#app').innerHTML=errBox('Could not load history',e.message);return}
+  if(my!==ctl)return;
+  const R=d.runs,c=k=>R.filter(r=>!r.error&&r.decision===k),sum=a=>a.reduce((s,r)=>s+(r.extracted.total||0),0),n=R.length;
+  const ok=c('APPROVE'),hold=c('HOLD'),rej=c('REJECT'),openHold=hold.filter(r=>!r.superseded_by),supN=hold.length-openHold.length;
+  const kp=(cls,l,v,sub)=>`<div class="card kpi ${cls}"><span>${l}</span><b class="num" data-tick="${v}">${v}</b><small>${sub}</small></div>`;
+  $('#app').innerHTML=head+`<div class="kpis">${kp('','Processed',n,n?`${R.filter(r=>r.ocr).length} scanned · ${R.filter(r=>!r.ocr).length} text`:'no runs yet')}${kp('ok','Approved',ok.length,inr(sum(ok))+' eligible for payment')}${kp('warn','On hold',hold.length,inr(sum(openHold))+' awaiting review'+(supN?` · ${supN} superseded`:''))}${kp('bad','Rejected',rej.length,inr(sum(rej))+' not approved')}</div>
+  <div class="card"><div class="tools"><div class="search">${ic('search')}<input id="q" type="search" placeholder="Search vendor, invoice no., PO, reason…" aria-label="Search runs" value="${esc(HF.q==='—'?'':HF.q)}"></div>
+   <div class="seg" role="group" aria-label="Filter by decision">${[['ALL','All'],['APPROVE','Approved'],['HOLD','On hold'],['REJECT','Rejected']].map(([k,l])=>`<button data-s="${k}" aria-pressed="${HF.s===k}">${l}</button>`).join('')}</div></div>
+   <div class="tablewrap" id="tbl"></div></div>`;
+  const draw=()=>{
+    const q=HF.q.trim().toLowerCase();
+    const rows=R.filter(r=>(HF.s==='ALL'||(!r.error&&r.decision===HF.s))&&(!q||[r.extracted.vendor,r.extracted.invoice_no,r.po,r.extracted.po_ref,r.headline,r.filename,decOf(r)[0]].join(' ').toLowerCase().includes(q)));
+    $('#tbl').innerHTML=!n?`<div class="empty"><b>No invoices processed yet</b>Run your first invoice to start building history.<div style="margin-top:14px"><a class="btn pri" href="#/upload">${ic('up')}Process an invoice</a></div></div>`
+    :!rows.length?`<div class="empty"><b>No runs match</b>Try a different search or filter.<div style="margin-top:14px"><button class="btn" id="rs">Reset filters</button></div></div>`
+    :`<table class="t"><thead><tr><th>Invoice</th><th>Vendor</th><th class="amt">Amount</th><th>Decision</th><th>Reason</th><th>Processed</th></tr></thead><tbody class="${draw.first?'stagger':''}">${rows.map((r,ri)=>{const[l,,cl]=decOf(r);return `<tr class="r" data-id="${r.id}" style="--i:${Math.min(ri,12)}"><td class="c-inv"><a class="lnk" href="#/run/${r.id}">${esc(r.extracted.invoice_no||(r.error?'Unreadable file':'No invoice no.'))}</a><div class="sub">${esc(r.filename)}</div></td><td class="c-ven">${esc(r.extracted.vendor||'—')}${r.po?`<div class="sub">${esc(r.po)}</div>`:''}</td><td class="amt num">${r.extracted.total!=null?inr(r.extracted.total):'—'}</td><td class="c-dec"><span class="badge ${cl}">${l}</span></td><td class="hide-m" style="max-width:300px">${esc(r.headline)}${r.superseded_by?'<div class="sub">Superseded by a later submission</div>':r.related?.relation==='corrected_resubmission'?'<div class="sub">Corrected resubmission</div>':''}</td><td class="sub hide-m num" style="white-space:nowrap">${when(r.ts)}</td></tr>`}).join('')}</tbody></table>`;
+    $('#tbl').querySelectorAll('tr.r').forEach(t=>t.onclick=e=>{if(e.target.closest('a'))return;location.hash='#/run/'+t.dataset.id});
+    const rs=$('#rs');if(rs)rs.onclick=()=>{HF={q:'',s:'ALL'};viewHistory(ctl)};
+  };
+  draw.first=true;draw();draw.first=false;tickers($('#app'));
+  $('#q').oninput=e=>{HF.q=e.target.value;draw()};
+  $('#app').querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{HF.s=b.dataset.s;$('#app').querySelectorAll('.seg button').forEach(x=>x.setAttribute('aria-pressed',x===b));draw()});
+  const clr=$('#clear');if(clr)clr.onclick=async()=>{if(!n)return toast('History is already empty');if(!confirm('Permanently delete all '+n+' saved runs? Duplicate detection will start from scratch.'))return;try{await api('/api/reset',{method:'POST',body:'{}'});toast('History cleared');viewHistory(ctl)}catch(e){toast(e.message)}};
+}
+route();
+</script></body></html>

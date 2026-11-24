@@ -14,7 +14,7 @@ PDF invoice → extract (text layer / OCR / optional LLM) → match PO → valid
 | **Human in the loop** | Held invoices go to the **Review queue**. A reviewer approves, rejects or asks the vendor (a ready-to-copy vendor query is drafted from the failed checks). A reason is mandatory; the automated decision stays on record. Safeguards: no approval without vendor match, invoice number and total, never a second copy of an approved invoice, call-back warning on bank changes, warning when approving above the PO balance. |
 | **Dashboard** | KPIs, value by decision, straight-through rate, source mix, search and filters (incl. *Needs review*), **CSV export** (formula-injection safe). |
 | **Reference data** | Purchase-order register with live balances and utilisation; vendor master (bank accounts masked). |
-| **Help** | *Rules & edge cases* (tolerances, the ten checks, decision matrix, 18 edge cases with one-click samples), *Guide* (how it works, step-by-step, formats, five-minute demo script, FAQ), an optional guided tour (`t`), keyboard shortcuts (`?`), light/dark theme, mobile layout. |
+| **Help** | *Rules & edge cases* (tolerances, the ten checks, decision matrix, 18 edge cases with one-click samples), *Guide* (how it works, step-by-step, formats, five-minute demo script, FAQ), an interactive process map, the assumptions behind the rules, an optional guided tour (`t`), a command palette (`Ctrl/⌘ K`) to find any invoice or page, keyboard shortcuts (`?`), the mid-tone *Harbor* theme by default (plus Light, Dark and System), mobile layout. Decisions land as an AP stamp on the run. |
 
 ## Run
 ```
